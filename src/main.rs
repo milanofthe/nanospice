@@ -3,12 +3,15 @@
 //
 // Algorithm (Berkeley SPICE structure): MNA with branch currents for V, L, E.
 // Newton-Raphson with pnjlim junction limiting and gmin stepping fallback for
-// the operating point. Transient with trapezoidal companion models and
-// iteration count timestep control. AC as small signal linearization at the
-// operating point. Dense LU with partial pivoting, real and complex.
+// the operating point. Transient with trapezoidal companion models, a
+// quadratic polynomial predictor and LTE based timestep control, iteration
+// count as nonconvergence fallback. AC as small signal linearization at the
+// operating point. Sparse LU with partial pivoting, generic over real and
+// complex via the Num trait.
 //
-// Matrix convention: unknown index 0 is a dummy ground row/column so device
-// stamps never need to special case ground; the LU loops start at index 1.
+// Matrix convention: unknown 0 is ground; stamps may address it freely, the
+// sparse assembly simply drops row/column 0, so device stamps never special
+// case ground and the solver loops start at index 1.
 
 use std::collections::HashMap;
 use std::f64::consts::{PI, SQRT_2};
@@ -17,6 +20,7 @@ const GMIN: f64 = 1e-12;
 const RELTOL: f64 = 1e-3;
 const VNTOL: f64 = 1e-6;
 const ABSTOL: f64 = 1e-12;
+const TRTOL: f64 = 7.0;
 const VT: f64 = 0.02585;
 const ITL_OP: usize = 100;
 const ITL_TRAN: usize = 10;
@@ -40,6 +44,30 @@ macro_rules! out {
 
 // ---------------------------------------------------------------- numbers ---
 
+trait Num:
+    Copy
+    + std::ops::Add<Output = Self>
+    + std::ops::Sub<Output = Self>
+    + std::ops::Mul<Output = Self>
+    + std::ops::Div<Output = Self>
+{
+    fn zero() -> Self;
+    fn one() -> Self;
+    fn mag(self) -> f64;
+}
+
+impl Num for f64 {
+    fn zero() -> f64 {
+        0.0
+    }
+    fn one() -> f64 {
+        1.0
+    }
+    fn mag(self) -> f64 {
+        self.abs()
+    }
+}
+
 #[derive(Clone, Copy)]
 struct Cx {
     re: f64,
@@ -50,25 +78,62 @@ impl Cx {
     fn new(re: f64, im: f64) -> Cx {
         Cx { re, im }
     }
-    fn zero() -> Cx {
-        Cx::new(0.0, 0.0)
+}
+
+impl std::ops::Add for Cx {
+    type Output = Cx;
+    fn add(self, o: Cx) -> Cx {
+        Cx::new(self.re + o.re, self.im + o.im)
     }
-    fn abs(self) -> f64 {
-        self.re.hypot(self.im)
-    }
+}
+
+impl std::ops::Sub for Cx {
+    type Output = Cx;
     fn sub(self, o: Cx) -> Cx {
         Cx::new(self.re - o.re, self.im - o.im)
     }
+}
+
+impl std::ops::Mul for Cx {
+    type Output = Cx;
     fn mul(self, o: Cx) -> Cx {
         Cx::new(self.re * o.re - self.im * o.im, self.re * o.im + self.im * o.re)
     }
+}
+
+impl std::ops::Div for Cx {
+    type Output = Cx;
     fn div(self, o: Cx) -> Cx {
         let d = o.re * o.re + o.im * o.im;
         Cx::new((self.re * o.re + self.im * o.im) / d, (self.im * o.re - self.re * o.im) / d)
     }
 }
 
+impl Num for Cx {
+    fn zero() -> Cx {
+        Cx::new(0.0, 0.0)
+    }
+    fn one() -> Cx {
+        Cx::new(1.0, 0.0)
+    }
+    fn mag(self) -> f64 {
+        self.re.hypot(self.im)
+    }
+}
+
 // SPICE number: longest parseable prefix plus unit suffix, e.g. 4.7k, 100n, 1meg.
+const SUFFIXES: [(&str, f64); 9] = [
+    ("meg", 1e6),
+    ("t", 1e12),
+    ("g", 1e9),
+    ("k", 1e3),
+    ("m", 1e-3),
+    ("u", 1e-6),
+    ("n", 1e-9),
+    ("p", 1e-12),
+    ("f", 1e-15),
+];
+
 fn num(tok: &str) -> Option<f64> {
     let t = tok.trim();
     let mut end = t.len();
@@ -79,28 +144,7 @@ fn num(tok: &str) -> Option<f64> {
         return None;
     }
     let v: f64 = t[..end].parse().unwrap();
-    let suffix = &t[end..];
-    let mult = if suffix.starts_with("meg") {
-        1e6
-    } else if suffix.starts_with('t') {
-        1e12
-    } else if suffix.starts_with('g') {
-        1e9
-    } else if suffix.starts_with('k') {
-        1e3
-    } else if suffix.starts_with('m') {
-        1e-3
-    } else if suffix.starts_with('u') {
-        1e-6
-    } else if suffix.starts_with('n') {
-        1e-9
-    } else if suffix.starts_with('p') {
-        1e-12
-    } else if suffix.starts_with('f') {
-        1e-15
-    } else {
-        1.0
-    };
+    let mult = SUFFIXES.iter().find(|(s, _)| t[end..].starts_with(s)).map_or(1.0, |(_, m)| *m);
     Some(v * mult)
 }
 
@@ -383,101 +427,113 @@ fn parse(src: &str) -> Circuit {
     Circuit { devs, names, nodes, analyses, nb }
 }
 
-// ---------------------------------------------------------- linear algebra ---
+// -------------------------------------------------------------- sparse LU ---
 
-struct Sys {
-    m: usize,
-    a: Vec<f64>,
-    b: Vec<f64>,
+// Rows are kept sorted by column. Eliminated columns are removed from active
+// rows, so the column k entry of any row at index >= k is always its first
+// entry; pivot search and elimination need no extra index structures.
+struct Sys<T> {
+    rows: Vec<Vec<(usize, T)>>,
+    b: Vec<T>,
 }
 
-impl Sys {
-    fn new(m: usize) -> Sys {
-        Sys { m, a: vec![0.0; m * m], b: vec![0.0; m] }
+impl<T: Num> Sys<T> {
+    fn new(m: usize) -> Sys<T> {
+        Sys { rows: vec![Vec::new(); m], b: vec![T::zero(); m] }
     }
-    fn add(&mut self, i: usize, j: usize, v: f64) {
-        self.a[i * self.m + j] += v;
+    fn add(&mut self, i: usize, j: usize, v: T) {
+        if i == 0 || j == 0 {
+            return;
+        }
+        match self.rows[i].binary_search_by_key(&j, |e| e.0) {
+            Ok(k) => self.rows[i][k].1 = self.rows[i][k].1 + v,
+            Err(k) => self.rows[i].insert(k, (j, v)),
+        }
     }
-    fn rhs(&mut self, i: usize, v: f64) {
-        self.b[i] += v;
+    fn rhs(&mut self, i: usize, v: T) {
+        if i > 0 {
+            self.b[i] = self.b[i] + v;
+        }
+    }
+    // Conductance quad: rows p/n against columns cp/cn (cp = p, cn = n for a
+    // two terminal conductance; the general form is the VCCS stamp).
+    fn quad(&mut self, p: usize, n: usize, cp: usize, cn: usize, g: T) {
+        self.add(p, cp, g);
+        self.add(p, cn, T::zero() - g);
+        self.add(n, cp, T::zero() - g);
+        self.add(n, cn, g);
+    }
+    // Voltage-defined branch: current column and voltage row for V, L, E.
+    fn branch(&mut self, p: usize, n: usize, br: usize) {
+        self.add(p, br, T::one());
+        self.add(n, br, T::zero() - T::one());
+        self.add(br, p, T::one());
+        self.add(br, n, T::zero() - T::one());
     }
 }
 
-fn lu_solve(mut a: Vec<f64>, mut b: Vec<f64>, m: usize) -> Option<Vec<f64>> {
+// row a minus f times pivot row p, both sorted; fill-in falls out of the merge
+fn merge<T: Num>(a: &[(usize, T)], p: &[(usize, T)], f: T) -> Vec<(usize, T)> {
+    let mut o = Vec::with_capacity(a.len() + p.len());
+    let (mut i, mut j) = (0, 0);
+    while i < a.len() && j < p.len() {
+        if a[i].0 == p[j].0 {
+            o.push((a[i].0, a[i].1 - f * p[j].1));
+            i += 1;
+            j += 1;
+        } else if a[i].0 < p[j].0 {
+            o.push(a[i]);
+            i += 1;
+        } else {
+            o.push((p[j].0, T::zero() - f * p[j].1));
+            j += 1;
+        }
+    }
+    o.extend_from_slice(&a[i..]);
+    for &(c, v) in &p[j..] {
+        o.push((c, T::zero() - f * v));
+    }
+    o
+}
+
+fn solve<T: Num>(mut s: Sys<T>) -> Option<Vec<T>> {
+    let m = s.b.len();
     for k in 1..m {
-        let mut p = k;
-        for i in k + 1..m {
-            if a[i * m + k].abs() > a[p * m + k].abs() {
-                p = i;
+        let (mut p, mut best) = (0, 0.0);
+        for i in k..m {
+            if let Some(&(c, v)) = s.rows[i].first() {
+                if c == k && v.mag() > best {
+                    best = v.mag();
+                    p = i;
+                }
             }
         }
-        if a[p * m + k].abs() < 1e-300 {
+        if best < 1e-300 {
             return None;
         }
-        if p != k {
-            for j in 1..m {
-                a.swap(k * m + j, p * m + j);
-            }
-            b.swap(k, p);
-        }
-        let piv = a[k * m + k];
+        s.rows.swap(k, p);
+        s.b.swap(k, p);
+        let prow = std::mem::take(&mut s.rows[k]);
+        let piv = prow[0].1;
         for i in k + 1..m {
-            let f = a[i * m + k] / piv;
-            if f != 0.0 {
-                for j in k + 1..m {
-                    a[i * m + j] -= f * a[k * m + j];
-                }
-                b[i] -= f * b[k];
+            if s.rows[i].first().map_or(false, |e| e.0 == k) {
+                let f = s.rows[i][0].1 / piv;
+                s.b[i] = s.b[i] - f * s.b[k];
+                s.rows[i] = merge(&s.rows[i][1..], &prow[1..], f);
             }
         }
+        s.rows[k] = prow;
     }
+    let mut x = s.b;
     for i in (1..m).rev() {
-        let mut s = b[i];
-        for j in i + 1..m {
-            s -= a[i * m + j] * b[j];
+        let mut sum = x[i];
+        for &(j, v) in &s.rows[i][1..] {
+            sum = sum - v * x[j];
         }
-        b[i] = s / a[i * m + i];
+        x[i] = sum / s.rows[i][0].1;
     }
-    b[0] = 0.0;
-    Some(b)
-}
-
-fn clu_solve(mut a: Vec<Cx>, mut b: Vec<Cx>, m: usize) -> Option<Vec<Cx>> {
-    for k in 1..m {
-        let mut p = k;
-        for i in k + 1..m {
-            if a[i * m + k].abs() > a[p * m + k].abs() {
-                p = i;
-            }
-        }
-        if a[p * m + k].abs() < 1e-300 {
-            return None;
-        }
-        if p != k {
-            for j in 1..m {
-                a.swap(k * m + j, p * m + j);
-            }
-            b.swap(k, p);
-        }
-        for i in k + 1..m {
-            let f = a[i * m + k].div(a[k * m + k]);
-            if f.abs() != 0.0 {
-                for j in k + 1..m {
-                    a[i * m + j] = a[i * m + j].sub(f.mul(a[k * m + j]));
-                }
-                b[i] = b[i].sub(f.mul(b[k]));
-            }
-        }
-    }
-    for i in (1..m).rev() {
-        let mut s = b[i];
-        for j in i + 1..m {
-            s = s.sub(a[i * m + j].mul(b[j]));
-        }
-        b[i] = s.div(a[i * m + i]);
-    }
-    b[0] = Cx::zero();
-    Some(b)
+    x[0] = T::zero();
+    Some(x)
 }
 
 // ---------------------------------------------------------- device models ---
@@ -540,36 +596,23 @@ enum Mode<'a> {
     Tran { h: f64, t: f64, st: &'a [[f64; 2]] },
 }
 
-fn assemble(ckt: &Circuit, x: &[f64], lim: &mut [f64], mode: &Mode, gmin: f64) -> Sys {
-    let m = ckt.nodes.len() + ckt.nb;
-    let mut s = Sys::new(m);
+fn assemble(ckt: &Circuit, x: &[f64], lim: &mut [f64], mode: &Mode, gmin: f64) -> Sys<f64> {
+    let mut s = Sys::new(ckt.nodes.len() + ckt.nb);
     let t_now = if let Mode::Tran { t, .. } = mode { *t } else { 0.0 };
     for (di, dv) in ckt.devs.iter().enumerate() {
         match dv {
-            Dev::R { p, n, v } => {
-                let g = 1.0 / v;
-                s.add(*p, *p, g);
-                s.add(*p, *n, -g);
-                s.add(*n, *p, -g);
-                s.add(*n, *n, g);
-            }
+            Dev::R { p, n, v } => s.quad(*p, *n, *p, *n, 1.0 / v),
             Dev::C { p, n, v } => {
                 if let Mode::Tran { h, st, .. } = mode {
                     let geq = 2.0 * v / h;
-                    let ieq = -(geq * st[di][0] + st[di][1]);
-                    s.add(*p, *p, geq);
-                    s.add(*p, *n, -geq);
-                    s.add(*n, *p, -geq);
-                    s.add(*n, *n, geq);
-                    s.rhs(*p, -ieq);
-                    s.rhs(*n, ieq);
+                    let ieq = geq * st[di][0] + st[di][1];
+                    s.quad(*p, *n, *p, *n, geq);
+                    s.rhs(*p, ieq);
+                    s.rhs(*n, -ieq);
                 }
             }
             Dev::L { p, n, v, br } => {
-                s.add(*p, *br, 1.0);
-                s.add(*n, *br, -1.0);
-                s.add(*br, *p, 1.0);
-                s.add(*br, *n, -1.0);
+                s.branch(*p, *n, *br);
                 if let Mode::Tran { h, st, .. } = mode {
                     let req = 2.0 * v / h;
                     s.add(*br, *br, -req);
@@ -577,10 +620,7 @@ fn assemble(ckt: &Circuit, x: &[f64], lim: &mut [f64], mode: &Mode, gmin: f64) -
                 }
             }
             Dev::V { p, n, dc, wave, br, .. } => {
-                s.add(*p, *br, 1.0);
-                s.add(*n, *br, -1.0);
-                s.add(*br, *p, 1.0);
-                s.add(*br, *n, -1.0);
+                s.branch(*p, *n, *br);
                 s.rhs(*br, wave_val(*dc, wave, t_now));
             }
             Dev::I { p, n, dc, wave, .. } => {
@@ -594,13 +634,9 @@ fn assemble(ckt: &Circuit, x: &[f64], lim: &mut [f64], mode: &Mode, gmin: f64) -
                 let vd = pnjlim(x[*p] - x[*n], lim[di], vt, vcrit);
                 lim[di] = vd;
                 let (id, gd) = diode_eval(vd, *is, vt, gmin);
-                let ieq = id - gd * vd;
-                s.add(*p, *p, gd);
-                s.add(*p, *n, -gd);
-                s.add(*n, *p, -gd);
-                s.add(*n, *n, gd);
-                s.rhs(*p, -ieq);
-                s.rhs(*n, ieq);
+                s.quad(*p, *n, *p, *n, gd);
+                s.rhs(*p, gd * vd - id);
+                s.rhs(*n, id - gd * vd);
             }
             Dev::M { g, .. } => {
                 let (ed, es, i0, gm, gds) = mos_op(dv, x);
@@ -616,36 +652,26 @@ fn assemble(ckt: &Circuit, x: &[f64], lim: &mut [f64], mode: &Mode, gmin: f64) -
                 s.rhs(es, ieq);
             }
             Dev::E { p, n, cp, cn, k, br } => {
-                s.add(*p, *br, 1.0);
-                s.add(*n, *br, -1.0);
-                s.add(*br, *p, 1.0);
-                s.add(*br, *n, -1.0);
+                s.branch(*p, *n, *br);
                 s.add(*br, *cp, -*k);
                 s.add(*br, *cn, *k);
             }
-            Dev::G { p, n, cp, cn, k } => {
-                s.add(*p, *cp, *k);
-                s.add(*p, *cn, -*k);
-                s.add(*n, *cp, -*k);
-                s.add(*n, *cn, *k);
-            }
+            Dev::G { p, n, cp, cn, k } => s.quad(*p, *n, *cp, *cn, *k),
         }
     }
     s
+}
+
+fn tolv(i: usize, nn: usize, a: f64, b: f64) -> f64 {
+    (if i < nn { VNTOL } else { ABSTOL }) + RELTOL * a.abs().max(b.abs())
 }
 
 fn newton(ckt: &Circuit, x: &mut Vec<f64>, lim: &mut [f64], mode: &Mode, gmin: f64, maxit: usize) -> Option<usize> {
     let nn = ckt.nodes.len();
     for it in 1..=maxit {
         let s = assemble(ckt, x, lim, mode, gmin);
-        let xn = lu_solve(s.a, s.b, s.m)?;
-        let mut conv = true;
-        for i in 1..xn.len() {
-            let tol = if i < nn { VNTOL } else { ABSTOL } + RELTOL * xn[i].abs().max(x[i].abs());
-            if (xn[i] - x[i]).abs() > tol {
-                conv = false;
-            }
-        }
+        let xn = solve(s)?;
+        let conv = (1..xn.len()).all(|i| (xn[i] - x[i]).abs() <= tolv(i, nn, xn[i], x[i]));
         *x = xn;
         if conv && it > 1 {
             return Some(it);
@@ -672,6 +698,15 @@ fn op_solve(ckt: &Circuit, x: &mut Vec<f64>, lim: &mut [f64]) {
     }
 }
 
+fn op_setup(ckt: &Circuit) -> (usize, Vec<f64>, Vec<f64>) {
+    let m = ckt.nodes.len() + ckt.nb;
+    let mut x = vec![0.0; m];
+    let mut lim = vec![0.0; ckt.devs.len()];
+    op_solve(ckt, &mut x, &mut lim);
+    (m, x, lim)
+}
+
+// Reactive state per device: [v, i] for C, [i, v] for L (value and its dual).
 fn init_state(ckt: &Circuit, x: &[f64]) -> Vec<[f64; 2]> {
     ckt.devs
         .iter()
@@ -688,13 +723,11 @@ fn update_state(ckt: &Circuit, x: &[f64], h: f64, st: &mut [[f64; 2]]) {
         match d {
             Dev::C { p, n, v } => {
                 let vn = x[*p] - x[*n];
-                let inew = 2.0 * v / h * (vn - st[k][0]) - st[k][1];
-                st[k] = [vn, inew];
+                st[k] = [vn, 2.0 * v / h * (vn - st[k][0]) - st[k][1]];
             }
             Dev::L { v, br, .. } => {
                 let inw = x[*br];
-                let vnw = 2.0 * v / h * (inw - st[k][0]) - st[k][1];
-                st[k] = [inw, vnw];
+                st[k] = [inw, 2.0 * v / h * (inw - st[k][0]) - st[k][1]];
             }
             _ => {}
         }
@@ -720,10 +753,7 @@ fn fmt_row(vals: &[f64]) -> String {
 // --------------------------------------------------------------- analyses ---
 
 fn run_op(ckt: &Circuit) {
-    let m = ckt.nodes.len() + ckt.nb;
-    let mut x = vec![0.0; m];
-    let mut lim = vec![0.0; ckt.devs.len()];
-    op_solve(ckt, &mut x, &mut lim);
+    let (_, x, _) = op_setup(ckt);
     out!("# op");
     out!("{}", columns(ckt).join(","));
     out!("{}", fmt_row(&x[1..]));
@@ -757,39 +787,108 @@ fn run_dc(ckt: &mut Circuit, src: &str, start: f64, stop: f64, step: f64) {
     out!("");
 }
 
+// Pulse corner breakpoints: transient steps must land on them, classic style.
+fn breakpoints(ckt: &Circuit, tstop: f64) -> Vec<f64> {
+    let mut bp = Vec::new();
+    for d in &ckt.devs {
+        if let Dev::V { wave: Some(Wave::Pulse { td, tr, tf, pw, per, .. }), .. }
+        | Dev::I { wave: Some(Wave::Pulse { td, tr, tf, pw, per, .. }), .. } = d
+        {
+            let mut t0 = *td;
+            while t0 < tstop {
+                for c in [t0, t0 + tr, t0 + tr + pw, t0 + tr + pw + tf] {
+                    if c > 0.0 && c < tstop {
+                        bp.push(c);
+                    }
+                }
+                if *per <= 0.0 {
+                    break;
+                }
+                t0 += per;
+            }
+        }
+    }
+    bp.sort_by(f64::total_cmp);
+    bp.dedup();
+    bp
+}
+
 fn run_tran(ckt: &Circuit, tstep: f64, tstop: f64) {
     if tstep <= 0.0 || tstop <= 0.0 {
         die("bad .tran parameters");
     }
-    let m = ckt.nodes.len() + ckt.nb;
-    let mut x = vec![0.0; m];
-    let mut lim = vec![0.0; ckt.devs.len()];
-    op_solve(ckt, &mut x, &mut lim);
+    let (m, mut x, mut lim) = op_setup(ckt);
+    let nn = ckt.nodes.len();
     let mut st = init_state(ckt, &x);
     out!("# tran");
     out!("time,{}", columns(ckt).join(","));
     out!("{:.9e},{}", 0.0, fmt_row(&x[1..]));
-    let hmin = tstop * 1e-10;
-    let (mut t, mut h) = (0.0, tstep);
+    let hmin = tstop * 1e-12;
+    // start small like classic SPICE; the LTE controller grows the step fast
+    let (mut t, mut h) = (0.0, tstep / 100.0);
+    // history for the quadratic predictor, most recent first: d1 = step from
+    // old[0] to the current x, d2 = step from old[1] to old[0]
+    let mut old: Vec<(Vec<f64>, f64)> = Vec::new();
+    let bp = breakpoints(ckt, tstop);
+    let mut bpi = 0;
     while t < tstop - hmin {
-        let hs = h.min(tstop - t);
-        let mut xn = x.clone();
-        match newton(ckt, &mut xn, &mut lim, &Mode::Tran { h: hs, t: t + hs, st: &st }, GMIN, ITL_TRAN) {
-            Some(iters) => {
-                t += hs;
-                update_state(ckt, &xn, hs, &mut st);
-                x = xn;
-                out!("{:.9e},{}", t, fmt_row(&x[1..]));
-                if iters <= ITL_TRAN / 2 {
-                    h = (2.0 * h).min(tstep);
-                }
+        while bpi < bp.len() && bp[bpi] <= t + hmin {
+            bpi += 1;
+        }
+        let mut hs = h.min(tstop - t);
+        let on_bp = bpi < bp.len() && t + hs >= bp[bpi] - hmin;
+        if on_bp {
+            hs = bp[bpi] - t;
+        }
+        let pred: Option<Vec<f64>> = (old.len() == 2).then(|| {
+            let (d1, d2) = (old[0].1, old[1].1);
+            let l0 = (hs + d1) * (hs + d1 + d2) / (d1 * (d1 + d2));
+            let l1 = -hs * (hs + d1 + d2) / (d1 * d2);
+            let l2 = hs * (hs + d1) / ((d1 + d2) * d2);
+            (0..m).map(|i| l0 * x[i] + l1 * old[0].0[i] + l2 * old[1].0[i]).collect()
+        });
+        // the predictor doubles as the Newton starting point
+        let mut xn = pred.clone().unwrap_or_else(|| x.clone());
+        let mode = Mode::Tran { h: hs, t: t + hs, st: &st };
+        let Some(iters) = newton(ckt, &mut xn, &mut lim, &mode, GMIN, ITL_TRAN) else {
+            h = hs / 8.0;
+            if h < hmin {
+                die(&format!("timestep too small at t = {:.3e}", t));
             }
-            None => {
-                h /= 8.0;
-                if h < hmin {
-                    die(&format!("timestep too small at t = {:.3e}", t));
-                }
+            continue;
+        };
+        let mut hnew = if iters <= ITL_TRAN / 2 { (2.0 * hs).min(tstep) } else { hs };
+        if let Some(xp) = &pred {
+            // Milne style LTE estimate: the corrector minus predictor gap is
+            // predictor error minus trapezoid error, both proportional to the
+            // third derivative, so scale the gap back to the trapezoid share.
+            let (d1, d2) = (old[0].1, old[1].1);
+            let etrap = hs * hs * hs / 12.0;
+            let fac = etrap / (hs * (hs + d1) * (hs + d1 + d2) / 6.0 + etrap);
+            let mut r: f64 = 0.0;
+            for i in 1..m {
+                r = r.max(fac * (xn[i] - xp[i]).abs() / (TRTOL * tolv(i, nn, xn[i], x[i])));
             }
+            let scale = 0.9 / r.max(1e-8).cbrt();
+            if r > 1.0 && hs > 20.0 * hmin {
+                h = hs * scale.clamp(0.125, 0.9);
+                continue;
+            }
+            hnew = (hs * scale.clamp(0.3, 2.0)).min(tstep);
+        }
+        t += hs;
+        update_state(ckt, &xn, hs, &mut st);
+        old.insert(0, (x, hs));
+        old.truncate(2);
+        x = xn;
+        out!("{:.9e},{}", t, fmt_row(&x[1..]));
+        if on_bp {
+            // waveform derivative is discontinuous here: restart small and
+            // drop the predictor history
+            old.clear();
+            h = tstep / 100.0;
+        } else {
+            h = hnew;
         }
     }
     out!("");
@@ -799,10 +898,7 @@ fn run_ac(ckt: &Circuit, dec: bool, n: usize, f1: f64, f2: f64) {
     if f1 <= 0.0 || f2 < f1 || n == 0 {
         die("bad .ac parameters");
     }
-    let m = ckt.nodes.len() + ckt.nb;
-    let mut x = vec![0.0; m];
-    let mut lim = vec![0.0; ckt.devs.len()];
-    op_solve(ckt, &mut x, &mut lim);
+    let (m, x, mut lim) = op_setup(ckt);
     // The real part of the AC matrix is exactly the DC Jacobian at the OP.
     let sdc = assemble(ckt, &x, &mut lim, &Mode::Dc, GMIN);
     let mut freqs = Vec::new();
@@ -831,30 +927,26 @@ fn run_ac(ckt: &Circuit, dec: bool, n: usize, f1: f64, f2: f64) {
     out!("freq,{}", hdr.join(","));
     for f in freqs {
         let w = 2.0 * PI * f;
-        let mut a: Vec<Cx> = sdc.a.iter().map(|&v| Cx::new(v, 0.0)).collect();
-        let mut b = vec![Cx::zero(); m];
+        let mut sc = Sys::<Cx> {
+            rows: sdc.rows.iter().map(|r| r.iter().map(|&(j, v)| (j, Cx::new(v, 0.0))).collect()).collect(),
+            b: vec![Cx::new(0.0, 0.0); m],
+        };
         for dv in &ckt.devs {
             match dv {
-                Dev::C { p, n, v } => {
-                    let c = w * v;
-                    a[*p * m + *p].im += c;
-                    a[*p * m + *n].im -= c;
-                    a[*n * m + *p].im -= c;
-                    a[*n * m + *n].im += c;
-                }
-                Dev::L { v, br, .. } => a[*br * m + *br].im -= w * v,
-                Dev::V { ac, br, .. } => b[*br] = Cx::new(*ac, 0.0),
+                Dev::C { p, n, v } => sc.quad(*p, *n, *p, *n, Cx::new(0.0, w * v)),
+                Dev::L { v, br, .. } => sc.add(*br, *br, Cx::new(0.0, -w * v)),
+                Dev::V { ac, br, .. } => sc.rhs(*br, Cx::new(*ac, 0.0)),
                 Dev::I { p, n, ac, .. } => {
-                    b[*p].re -= *ac;
-                    b[*n].re += *ac;
+                    sc.rhs(*p, Cx::new(-*ac, 0.0));
+                    sc.rhs(*n, Cx::new(*ac, 0.0));
                 }
                 _ => {}
             }
         }
-        let xa = clu_solve(a, b, m).unwrap_or_else(|| die("singular matrix in .ac"));
+        let xa = solve(sc).unwrap_or_else(|| die("singular matrix in .ac"));
         let mut row = vec![f];
         for v in &xa[1..] {
-            row.push(v.abs());
+            row.push(v.mag());
             row.push(v.im.atan2(v.re) * 180.0 / PI);
         }
         out!("{}", fmt_row(&row));

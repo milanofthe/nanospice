@@ -40,11 +40,24 @@ ground, unit suffixes `t g meg k m u n p f`.
 
 Classic Berkeley SPICE structure: MNA with branch currents for V, L and E,
 Newton-Raphson with pnjlim junction limiting and gmin stepping for the
-operating point, trapezoidal integration with companion models and iteration
-count timestep control for transient, small signal AC linearized at the
-operating point. Dense LU with partial pivoting instead of sparse Markowitz is
-the one deliberate departure from the classic implementation, which caps
-practical circuit size at a few hundred nodes.
+operating point, trapezoidal integration with companion models for transient,
+small signal AC linearized at the operating point (the real part of the AC
+matrix is exactly the DC Jacobian).
+
+Timestep control is LTE based: a quadratic polynomial predictor through the
+last three accepted points doubles as the Newton starting value, and the
+corrector minus predictor gap yields a Milne style estimate of the trapezoid
+truncation error, which sets the next step through the usual cube root rule
+(TRTOL 7). Iteration count remains the fallback on nonconvergence, and pulse
+source corners are registered as breakpoints that steps land on exactly.
+
+The linear solver is a custom sparse LU with partial pivoting, generic over
+real and complex through a small Num trait. Rows are sorted (column, value)
+vectors and elimination is a merge of two sorted rows, so fill-in falls out of
+the merge; since eliminated columns are removed, the pivot column entry of an
+active row is always its first element. There is no Markowitz ordering, matrix
+order follows netlist order. A 2000 node RC ladder solves OP plus an AC sweep
+in tens of milliseconds.
 
 ## Not supported
 

@@ -100,6 +100,36 @@ fn tran_rl() {
 }
 
 #[test]
+fn tran_lte_fast_tau() {
+    // tau = 10u is ten times smaller than tstep, so a fixed tstep integration
+    // would ring badly; the LTE controller has to resolve the edge on its own
+    let rows = run(
+        "lte.cir",
+        "lte\nv1 in 0 pulse 0 1 0 1n 1n 1 2\nr1 in out 1k\nc1 out 0 10n\n.tran 100u 1m\n.end\n",
+    );
+    let (h, d) = table(&rows, "tran");
+    let c = col(&h, "v(out)");
+    for r in &d {
+        let refv = 1.0 - (-r[0] / 1e-5).exp();
+        assert!((r[c] - refv).abs() < 2e-2, "t={} v={} ref={}", r[0], r[c], refv);
+    }
+}
+
+#[test]
+fn op_ladder() {
+    // 201 equal resistors in series exercise the sparse solver and pivoting
+    let mut nl = String::from("ladder\nv1 n0 0 dc 10\n");
+    for k in 0..200 {
+        nl.push_str(&format!("r{} n{} n{} 1\n", k, k, k + 1));
+    }
+    nl.push_str("rload n200 0 1\n.op\n.end\n");
+    let rows = run("ladder.cir", &nl);
+    let (h, d) = table(&rows, "op");
+    assert!((d[0][col(&h, "v(n100)")] - 10.0 * 101.0 / 201.0).abs() < 1e-9);
+    assert!((d[0][col(&h, "i(v1)")] + 10.0 / 201.0).abs() < 1e-9);
+}
+
+#[test]
 fn ac_rc() {
     let rows = run(
         "acrc.cir",
