@@ -1,0 +1,7 @@
+halfwave rectifier with rc load
+v1 in 0 sin(0 5 1k)
+d1 in out
+r1 out 0 10k
+c1 out 0 1u
+.tran 20u 3m
+.end

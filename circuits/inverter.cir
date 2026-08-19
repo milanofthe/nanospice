@@ -1,0 +1,7 @@
+cmos inverter dc transfer curve
+vdd vdd 0 dc 5
+vin in 0 dc 0
+m1 out in 0 0 nmos kp=2e-4 vt0=1 lambda=0.05
+m2 out in vdd vdd pmos kp=2e-4 vt0=1 lambda=0.05
+.dc vin 0 5 0.05
+.end
