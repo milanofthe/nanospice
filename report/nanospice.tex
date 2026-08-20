@@ -58,8 +58,8 @@
 {\small\texttt{#1}\hfill #2}\\[4pt]
 \begin{tikzpicture}
 \pgfmathsetlengthmacro{\bw}{\linewidth-4pt}
-\fill[pattern=north east lines] (0,0) rectangle ({(#3/997)*\bw}, 4.5pt);
-\fill[black] ({(#3/997)*\bw},0) rectangle ({(#4/997)*\bw}, 4.5pt);
+\fill[pattern=north east lines] (0,0) rectangle ({(#3/992)*\bw}, 4.5pt);
+\fill[black] ({(#3/992)*\bw},0) rectangle ({(#4/992)*\bw}, 4.5pt);
 \draw[black, line width=0.4pt] (0,0) rectangle (\bw, 4.5pt);
 \end{tikzpicture}%
 \end{tcolorbox}\medskip}
@@ -111,9 +111,9 @@ circuit data model & 61 & 162 \\
 parser & 275 & 437 \\
 sparse LU and stamp helpers & 113 & 550 \\
 device models & 64 & 614 \\
-solver: assembly, Newton, operating point & 147 & 761 \\
-output selection & 26 & 787 \\
-analyses and main & 210 & 997 \\
+solver: assembly, Newton, operating point & 142 & 756 \\
+output selection & 26 & 782 \\
+analyses and main & 210 & 992 \\
 \bottomrule
 \end{tabular}
 \caption{Line budget by code section, in file order.}
@@ -704,7 +704,7 @@ parameter defaults and nothing anywhere else.
 
 \section{The solver}
 \label{sec:solver}
-\locbar{solver: assembly, Newton, operating point}{147 lines, budget 614 to 761}{614}{761}
+\locbar{solver: assembly, Newton, operating point}{142 lines, budget 614 to 756}{614}{756}
 
 \paragraph{Companion linearization.}
 A nonlinear device current $i(v)$ enters the linear system as its tangent
@@ -730,11 +730,13 @@ i_{n+1} = \underbrace{\frac{2C}{h}}_{g_{eq}}\, v_{n+1}
         - \Bigl( \frac{2C}{h}\, v_n + i_n \Bigr),
 \]
 a conductance $g_{eq}$ with a history current source: the capacitor is a
-resistor for the duration of one step. The inductor is the dual,
-$v_{n+1} = (2L/h)(i_{n+1} - i_n) - v_n$, stamped into its branch row
-since its current is already an MNA unknown. Each reactive device keeps a
-two-entry state, its value and the dual quantity, updated after every
-accepted step.
+resistor for the duration of one step. The inductor is the dual through
+the flux $\varphi = L i$ and $v = d\varphi/dt$, stamped into its branch
+row since its current is already an MNA unknown. Each reactive device
+keeps a two-entry state, its charge or flux and the dual rate ($i$ for
+the capacitor, $v$ for the inductor), and both duals advance by the same
+divided difference after every accepted step, one update rule for both
+element types.
 
 \begin{center}
 \begin{circuitikz}[american, scale=0.85]
@@ -894,7 +896,7 @@ can converge to the wrong branch. A cross-coupled NMOS latch in the test
 suite exercises the path.
 
 \section{Output selection}
-\locbar{output}{26 lines, budget 761 to 787}{761}{787}
+\locbar{output}{26 lines, budget 756 to 782}{756}{782}
 
 Output columns are the node voltages in netlist order followed by the
 branch currents in device order, named \texttt{v(node)} and
@@ -905,7 +907,7 @@ every analysis row is then a gather over that index list.
 
 \section{Analyses}
 \label{sec:analyses}
-\locbar{analyses and main}{210 lines, budget 787 to 997}{787}{997}
+\locbar{analyses and main}{210 lines, budget 782 to 992}{782}{992}
 
 \paragraph{Operating point and DC sweep.}
 \texttt{.op} is one call into the operating point solver.
@@ -1024,7 +1026,7 @@ Frequencies sweep linearly or per decade
 phase.
 
 \section{Validation}
-\locbar{tests/cli.rs}{330 lines, 0 of 997: tests are free}{0}{0}
+\locbar{tests/cli.rs}{330 lines, 0 of 992: tests are free}{0}{0}
 
 The test suite is 23 integration tests that run the built binary on real
 netlists and parse its CSV. Tests do not count toward the budget, so
@@ -1115,8 +1117,9 @@ complete: MNA, sparse LU with partial pivoting, two Verilog-A style
 contribution primitives carrying all device stamps, Newton with pnjlim
 and both continuation fallbacks as data-driven homotopy paths,
 trapezoidal integration with LTE control, breakpoints and damped restart
-steps, charge-based graded junction capacitances, small-signal AC, eleven
-device letters with three source waveforms, four analyses, model cards,
-initial conditions, and output selection. Three lines of headroom remain.
+steps, charge and flux based reactive state with graded junction
+capacitances, small-signal AC, eleven device letters with three source
+waveforms, four analyses, model cards, initial conditions, and output
+selection. Eight lines of headroom remain.
 
 \end{document}

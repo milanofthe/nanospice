@@ -723,9 +723,9 @@ fn assemble(ckt: &Circuit, x: &[f64], lim: &mut [[f64; 2]], mode: &Mode, gmin: f
             }
             Dev::L { p, n, v, br, .. } => match mode {
                 Mode::Tran { h, st, be, .. } => {
-                    let req = if *be { v / h } else { 2.0 * v / h };
-                    let vh = req * st[di][0] + if *be { 0.0 } else { st[di][1] };
-                    s.vcontrib(*p, *n, *br, -vh, &[(*br, 0, req)]);
+                    let k = if *be { 1.0 } else { 2.0 };
+                    let vh = k / h * st[di][0] + if *be { 0.0 } else { st[di][1] };
+                    s.vcontrib(*p, *n, *br, -vh, &[(*br, 0, k * v / h)]);
                 }
                 _ => s.vcontrib(*p, *n, *br, 0.0, &[]),
             },
@@ -835,14 +835,15 @@ fn op_setup(ckt: &Circuit) -> (usize, Vec<f64>, Vec<[f64; 2]>) {
     (m, x, lim)
 }
 
-// Reactive state per device: [v, i] for C, [i, v] for L (value and its dual).
+// Reactive state per device: [charge, current] for C, [flux, voltage] for
+// L; both duals advance by the same divided difference.
 fn init_state(ckt: &Circuit, x: &[f64], uic: bool) -> Vec<[f64; 2]> {
     let pick = |ic: f64, live: f64| if uic && ic.is_finite() { ic } else { live };
     ckt.devs
         .iter()
         .map(|d| match d {
             Dev::C { p, n, v, ic, m: mg } => [ceval(pick(*ic, x[*p] - x[*n]), *v, *mg).0, 0.0],
-            Dev::L { br, ic, .. } => [pick(*ic, x[*br]), 0.0],
+            Dev::L { v, br, ic, .. } => [v * pick(*ic, x[*br]), 0.0],
             _ => [0.0, 0.0],
         })
         .collect()
@@ -851,17 +852,12 @@ fn init_state(ckt: &Circuit, x: &[f64], uic: bool) -> Vec<[f64; 2]> {
 fn update_state(ckt: &Circuit, x: &[f64], h: f64, st: &mut [[f64; 2]], be: bool) {
     let (f, m) = if be { (1.0, 0.0) } else { (2.0, 1.0) };
     for (k, d) in ckt.devs.iter().enumerate() {
-        match d {
-            Dev::C { p, n, v, m: mg, .. } => {
-                let q = ceval(x[*p] - x[*n], *v, *mg).0;
-                st[k] = [q, f / h * (q - st[k][0]) - m * st[k][1]];
-            }
-            Dev::L { v, br, .. } => {
-                let inw = x[*br];
-                st[k] = [inw, f * v / h * (inw - st[k][0]) - m * st[k][1]];
-            }
-            _ => {}
-        }
+        let q = match d {
+            Dev::C { p, n, v, m: mg, .. } => ceval(x[*p] - x[*n], *v, *mg).0,
+            Dev::L { v, br, .. } => v * x[*br],
+            _ => continue,
+        };
+        st[k] = [q, f / h * (q - st[k][0]) - m * st[k][1]];
     }
 }
 
