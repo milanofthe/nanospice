@@ -739,19 +739,19 @@ divided difference after every accepted step, one update rule for both
 element types.
 
 \begin{center}
-\begin{circuitikz}[american, scale=0.85]
-\draw (0,2.4) node[circ]{} node[above]{$p$} to[C, l=$C$] (0,0) node[circ]{} node[below]{$n$};
-\node at (1.4,1.2) {$\rightarrow$};
-\draw (2.8,2.4) node[circ]{} node[above]{$p$} -- (4.8,2.4);
-\draw (2.8,2.4) to[R, l=$\tfrac{2C}{h}$] (2.8,0);
-\draw (4.8,2.4) to[I, l=$I_{eq}$] (4.8,0);
-\draw (2.8,0) node[circ]{} node[below]{$n$} -- (4.8,0);
+\begin{circuitikz}[american]
+\draw (0,3.4) node[circ]{} node[above]{$p$} to[C, l=$C$] (0,0) node[circ]{} node[below]{$n$};
+\node at (1.5,1.7) {$\rightarrow$};
+\draw (3.0,3.4) node[circ]{} node[above]{$p$} -- (5.4,3.4);
+\draw (3.0,3.4) to[R, l=$\tfrac{2C}{h}$] (3.0,0);
+\draw (5.4,3.4) to[I, l=$I_{eq}$] (5.4,0);
+\draw (3.0,0) node[circ]{} node[below]{$n$} -- (5.4,0);
 \end{circuitikz}
-\hspace{10mm}
-\begin{circuitikz}[american, scale=0.85]
-\draw (0,2.4) node[circ]{} node[above]{$p$} to[L, l=$L$] (0,0) node[circ]{} node[below]{$n$};
-\node at (1.4,1.2) {$\rightarrow$};
-\draw (2.8,2.4) node[circ]{} node[above]{$p$} to[R, l=$\tfrac{2L}{h}$] (2.8,1.2) to[V, l=$V_{eq}$] (2.8,0) node[circ]{} node[below]{$n$};
+\hspace{14mm}
+\begin{circuitikz}[american]
+\draw (0,3.4) node[circ]{} node[above]{$p$} to[L, l=$L$] (0,0) node[circ]{} node[below]{$n$};
+\node at (1.5,1.7) {$\rightarrow$};
+\draw (3.0,3.4) node[circ]{} node[above]{$p$} to[R, l=$\tfrac{2L}{h}$] (3.0,1.7) to[V, l=$V_{eq}$] (3.0,0) node[circ]{} node[below]{$n$};
 \end{circuitikz}
 \end{center}
 
