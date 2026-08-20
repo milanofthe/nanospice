@@ -24,42 +24,42 @@
 \titleformat{\section}{\Large\bfseries}{\thesection}{0.8em}{}[{\vspace{1pt}\titlerule[0.5pt]}]
 \titlespacing*{\section}{0pt}{26pt}{12pt}
 
+\usetikzlibrary{patterns}
+
 % code tile
-\newtcblisting{rust}{listing only, breakable, colback=gray!4, colframe=gray!45,
-  boxrule=0.4pt, arc=1pt, left=6pt, right=4pt, top=3pt, bottom=3pt,
+\newtcblisting{rust}{listing only, breakable, sharp corners, colback=white,
+  colframe=black, boxrule=0.5pt, left=6pt, right=4pt, top=3pt, bottom=3pt,
   listing options={language=Rust, basicstyle=\small\ttfamily,
-  commentstyle=\color{black!55}\itshape, keywordstyle=\bfseries,
+  commentstyle=\itshape, keywordstyle=\bfseries,
   columns=fullflexible, keepspaces=true, breaklines=true}}
 
-% derivation tile
-\newtcolorbox{derivation}[1]{breakable, colback=gray!5, colframe=gray!50,
-  colbacktitle=gray!16, coltitle=black, fonttitle=\bfseries\small,
-  title={Derivation: #1}, boxrule=0.5pt, arc=1.5pt,
+% titled tiles: black frame, white body, title separated by a rule
+\newtcolorbox{derivation}[1]{breakable, sharp corners, colback=white,
+  colframe=black, colbacktitle=white, coltitle=black, titlerule=0.5pt,
+  fonttitle=\bfseries\small, title={Derivation: #1}, boxrule=0.5pt,
   left=7pt, right=7pt, top=5pt, bottom=6pt}
 
-% design decision tile
-\newtcolorbox{decision}[1]{breakable, colback=white, colframe=black!60,
-  colbacktitle=black!10, coltitle=black, fonttitle=\bfseries\small,
-  title={Design decision: #1}, boxrule=0.6pt, arc=1.5pt,
+\newtcolorbox{decision}[1]{breakable, sharp corners, colback=white,
+  colframe=black, colbacktitle=white, coltitle=black, titlerule=0.5pt,
+  fonttitle=\bfseries\small, title={Design decision: #1}, boxrule=0.5pt,
   left=7pt, right=7pt, top=5pt, bottom=6pt}
 
-% field note tile (things that went wrong and what they taught)
-\newtcolorbox{fieldnote}[1]{breakable, colback=gray!9, colframe=black!70,
-  colbacktitle=gray!25, coltitle=black, fonttitle=\bfseries\small,
-  title={Field note: #1}, boxrule=0.6pt, arc=1.5pt,
+\newtcolorbox{fieldnote}[1]{breakable, sharp corners, colback=white,
+  colframe=black, colbacktitle=white, coltitle=black, titlerule=0.5pt,
+  fonttitle=\bfseries\small, title={Field note: #1}, boxrule=0.5pt,
   left=7pt, right=7pt, top=5pt, bottom=6pt}
 
-% loc tile: code section name, label, budget range [start, end] of 999
+% loc tile: code section name, label, budget range [start, end] of 999;
+% hatched = lines spent before this section, solid = this section
 \newcommand{\locbar}[4]{%
-\begin{tcolorbox}[colback=gray!7, colframe=gray!50, boxrule=0.4pt, arc=1.5pt,
-  left=7pt, right=7pt, top=4pt, bottom=6pt]
+\begin{tcolorbox}[sharp corners, colback=white, colframe=black,
+  boxrule=0.5pt, left=7pt, right=7pt, top=4pt, bottom=6pt]
 {\small\texttt{#1}\hfill #2}\\[4pt]
 \begin{tikzpicture}
 \pgfmathsetlengthmacro{\bw}{\linewidth-4pt}
-\fill[gray!22] (0,0) rectangle (\bw, 4.5pt);
-\fill[gray!45] (0,0) rectangle ({(#3/999)*\bw}, 4.5pt);
-\fill[black!75] ({(#3/999)*\bw},0) rectangle ({(#4/999)*\bw}, 4.5pt);
-\draw[gray!60, line width=0.3pt] (0,0) rectangle (\bw, 4.5pt);
+\fill[pattern=north east lines] (0,0) rectangle ({(#3/999)*\bw}, 4.5pt);
+\fill[black] ({(#3/999)*\bw},0) rectangle ({(#4/999)*\bw}, 4.5pt);
+\draw[black, line width=0.4pt] (0,0) rectangle (\bw, 4.5pt);
 \end{tikzpicture}%
 \end{tcolorbox}\medskip}
 
