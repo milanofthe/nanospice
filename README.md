@@ -2,7 +2,7 @@
 
 A classic SPICE circuit simulator in one Rust source file, capped at 1000
 lines of code. No dependencies, std only. A test counts the nonblank,
-noncomment lines of src/main.rs and fails above 1000. Current count: 999.
+noncomment lines of src/main.rs and fails above 1000. Current count: 991.
 
 The repository is educational. The report in report/ derives every algorithm
 in the simulator, explains the design decisions, and maps both to the code
@@ -30,6 +30,7 @@ dec/lin. Cards: .model, .print, .end.
 | `Ixxx p n ...` | current source, same spec as V |
 | `Dxxx p n [model] [is=1e-14] [n=1]` | diode |
 | `Mxxx d g s b nmos\|pmos [model] [kp=2e-5] [vt0=0] [lambda=0]` | MOSFET level 1 |
+| `Jxxx d g s njf\|pjf [model] [beta=1e-4] [vto=-2] [lambda=0]` | JFET, square law |
 | `Qxxx c b e npn\|pnp [model] [is=1e-16] [bf=100] [br=1]` | BJT, Ebers-Moll |
 | `Exxx p n cp cn gain` | VCVS |
 | `Gxxx p n cp cn gm` | VCCS |
@@ -48,8 +49,10 @@ noise analysis.
 
 ## Algorithms
 
-MNA with branch currents for V, L and E. Newton-Raphson with pnjlim junction
-limiting; gmin stepping and source stepping as operating point fallbacks.
+MNA with branch currents for V, L and E. Nonlinear device stamps go through
+one Verilog-A style contribution primitive. Newton-Raphson with pnjlim
+junction limiting; gmin stepping and source stepping as operating point
+fallbacks.
 Transient: trapezoidal companion models, quadratic predictor, LTE timestep
 control, pulse breakpoints. AC: small-signal linearization at the operating
 point. Linear solver: sparse LU with partial pivoting, generic over real and
@@ -57,9 +60,9 @@ complex. Derivations are in report/nanospice.pdf.
 
 ## Tests
 
-`cargo test` runs 18 integration tests in tests/cli.rs against the built
+`cargo test` runs 19 integration tests in tests/cli.rs against the built
 binary: analytic references (RC and RL step response, RC corner frequency,
-LC amplitude and energy conservation, MOSFET and BJT bias points), an
+LC amplitude and energy conservation, MOSFET, JFET and BJT bias points), an
 npn/pnp symmetry check, a randomized resistor ladder verified against a
 Thevenin reduction computed in the test, error handling fuzz cases, and the
 LOC budget guard. Tests and comments do not count toward the budget.
