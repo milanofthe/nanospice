@@ -7,6 +7,15 @@
 \usepackage{listings}
 \usepackage[most]{tcolorbox}
 \usepackage{circuitikz}
+\usepackage{pgfplots}
+\pgfplotsset{compat=1.17}
+\usetikzlibrary{calc}
+\pgfplotsset{bwaxis/.style={
+  width=0.6\textwidth, height=0.34\textwidth, line width=0.4pt,
+  tick style={black}, label style={font=\small},
+  tick label style={font=\footnotesize},
+  legend style={font=\footnotesize, draw=black}, legend cell align=left,
+  grid=major, grid style={dotted, black!99, line width=0.3pt}}}
 \usepackage{titlesec}
 \usepackage{microtype}
 \usepackage[hidelinks]{hyperref}
@@ -408,6 +417,7 @@ models.
 \end{decision}
 
 \section{Sparse LU}
+\label{sec:sparse}
 \locbar{sparse LU}{113 lines, budget 437 to 550}{437}{550}
 
 Gaussian elimination factors $PA = LU$ with row pivoting and then solves
@@ -547,14 +557,16 @@ a node with no DC path to ground, produces
 \emph{singular matrix at node b, no conduction path?} instead of a
 generic failure.
 
-The cost of an elimination step is the sum of the lengths of the merged
-rows, so the total factorization cost is proportional to the fill-in it
-creates. For ladder and tree topologies, elimination in netlist order
-creates none: a 30-stage randomized ladder factors in linear time, and a
-2000-node RC ladder solves its operating point plus an AC sweep in tens of
-milliseconds. The deliberate omission is Markowitz ordering; the worst
-case therefore degrades toward dense cost, which for the circuit sizes a
-1000-line simulator will realistically see is the right trade.
+The elimination work is the sum of the lengths of the merged rows, so it
+is proportional to the fill-in; on ladder and tree topologies in netlist
+order there is none and the merges are linear in $n$. The pivot search is
+not: it probes the first entry of every remaining row per column, an
+$O(n^2)$ total that the benchmark in section~\ref{sec:results} makes
+visible beyond about $10^4$ unknowns. A column-linked candidate structure
+would remove it and joins Markowitz ordering on the cut list; for the
+circuit sizes a 1000-line simulator realistically sees, a 2000-node
+ladder solving its operating point plus an AC sweep in about ten
+milliseconds, both are the right cut.
 
 \section{Device models}
 \label{sec:devices}
@@ -1025,6 +1037,145 @@ Frequencies sweep linearly or per decade
 ($f_k = f_1 \cdot 10^{k/n}$), and each unknown reports magnitude and
 phase.
 
+\section{Reference circuits and results}
+\label{sec:results}
+
+Every plot in this section is simulator output: \texttt{report/data/gen.py}
+runs the release binary on the netlists shown and writes the data files
+the figures read. Analytic references are drawn dashed.
+
+\paragraph{RC step response.}
+The first transient test in the suite, plotted against its closed form:
+
+\begin{center}
+\begin{tikzpicture}
+\begin{axis}[bwaxis, xlabel={$t$ / ms}, ylabel={$v_{out}$ / V},
+  legend pos=south east]
+\addplot[black, thick] table {data/rc.dat};
+\addplot[black, dashed, domain=0:5, samples=120] {1 - exp(-x)};
+\legend{nanospice, $1 - e^{-t/\tau}$}
+\end{axis}
+\end{tikzpicture}
+\end{center}
+
+\paragraph{CMOS inverter.}
+Two square-law transistors, swept with \texttt{.dc}; the finite
+transition slope is the channel-length modulation $\lambda = 0.05$:
+
+\begin{center}
+\begin{circuitikz}[american, scale=0.85, transform shape]
+\draw (0,2.6) node[pmos](P){};
+\draw (0,1.0) node[nmos](N){};
+\draw (P.D) -- (N.D);
+\draw (P.S) -- ++(0,0.3) node[vcc]{$V_{DD}$};
+\draw (N.S) -- ++(0,-0.3) node[ground]{};
+\draw (P.G) -- (N.G);
+\draw ($(P.G)!0.5!(N.G)$) node[circ]{} -- ++(-0.9,0) node[left]{$v_{in}$};
+\draw ($(P.D)!0.5!(N.D)$) node[circ]{} -- ++(1.0,0) node[right]{$v_{out}$};
+\end{circuitikz}
+\hspace{8mm}
+\begin{tikzpicture}
+\begin{axis}[bwaxis, width=0.5\textwidth, height=0.36\textwidth,
+  xlabel={$v_{in}$ / V}, ylabel={$v_{out}$ / V}]
+\addplot[black, thick] table {data/inverter.dat};
+\end{axis}
+\end{tikzpicture}
+\end{center}
+
+\paragraph{Common-emitter amplifier.}
+Divider bias, emitter degeneration with a bypass capacitor, coupling
+capacitor at the input. Midband gain $g_m R_C \approx 240$
+($47.6$\,dB); the low corner comes from the coupling and bypass
+capacitors:
+
+\begin{center}
+\begin{circuitikz}[american, scale=0.8, transform shape]
+\draw (0,2) to[V, invert, l=$v_{in}$] (0,0) node[ground]{};
+\draw (0,2) to[C, l=$C_{in}$] (2.4,2) node[circ]{};
+\draw (2.4,4.2) to[R, l=$R_1$] (2.4,2) to[R, l=$R_2$] (2.4,-0.2) node[ground]{};
+\draw (2.4,4.2) node[vcc]{$V_{CC}$};
+\draw (2.4,2) -- (3.4,2);
+\draw (3.4,2) node[npn, anchor=B](q){};
+\draw (q.C) to[R, l=$R_C$] ($(q.C)+(0,1.7)$) node[vcc]{$V_{CC}$};
+\draw (q.C) -- ++(1.2,0) node[circ]{} node[right]{$v_{out}$};
+\draw (q.E) to[R, l_=$R_E$] ($(q.E)+(0,-1.7)$) node[ground]{};
+\draw (q.E) -- ++(1.4,0) to[C, l=$C_E$] ($(q.E)+(1.4,-1.7)$) node[ground]{};
+\end{circuitikz}
+\hspace{6mm}
+\begin{tikzpicture}
+\begin{semilogxaxis}[bwaxis, width=0.46\textwidth, height=0.38\textwidth,
+  xlabel={$f$ / Hz}, ylabel={$|v_{out}/v_{in}|$ / dB}]
+\addplot[black, thick] table {data/ce_bode.dat};
+\end{semilogxaxis}
+\end{tikzpicture}
+\end{center}
+
+\paragraph{LC tank.}
+Undriven, started from an inductor initial condition with \texttt{uic}.
+The trapezoidal rule is undamped, so the amplitude holds at
+$i_0 \sqrt{L/C} = 31.6$\,mV (dashed):
+
+\begin{center}
+\begin{tikzpicture}
+\begin{axis}[bwaxis, xlabel={$t$ / $\mu$s}, ylabel={$v$ / mV}]
+\addplot[black] table {data/lc.dat};
+\addplot[black, dashed, domain=0:600] {31.62};
+\addplot[black, dashed, domain=0:600] {-31.62};
+\end{axis}
+\end{tikzpicture}
+\end{center}
+
+\paragraph{Ring oscillator.}
+Three inverters in a loop; the gate capacitances set the stage delay. A
+short current kick moves the circuit off its metastable operating point,
+then the ring settles to a 78\,ns period:
+
+\begin{center}
+\begin{circuitikz}[american, scale=0.8, transform shape]
+\draw (0,0) node[not port](n1){};
+\draw (2.6,0) node[not port](n2){};
+\draw (5.2,0) node[not port](n3){};
+\draw (n1.out) -- (n2.in);
+\draw (n2.out) -- (n3.in);
+\draw (n3.out) -- ++(0.7,0) -- ++(0,-2.6) -| ($(n1.in)+(-0.5,0)$) -- (n1.in);
+\draw (n1.out) ++(0.3,0) node[circ]{} to[C, l=$C_g$] ++(0,-1.1) node[ground]{};
+\draw (n2.out) ++(0.3,0) node[circ]{} to[C, l=$C_g$] ++(0,-1.1) node[ground]{};
+\draw (n3.out) ++(0.3,0) node[circ]{} to[C, l=$C_g$] ++(0,-1.1) node[ground]{};
+\end{circuitikz}
+\end{center}
+
+\begin{center}
+\begin{tikzpicture}
+\begin{axis}[bwaxis, width=0.8\textwidth, height=0.3\textwidth,
+  xlabel={$t$ / ns}, ylabel={$v_a$ / V}]
+\addplot[black] table {data/ring.dat};
+\end{axis}
+\end{tikzpicture}
+\end{center}
+
+\paragraph{Benchmark.}
+Operating point of RC ladders of increasing size, wall clock of the whole
+process (parse, solve, print one column), best of several runs on an
+Apple M3, release build:
+
+\begin{center}
+\begin{tikzpicture}
+\begin{loglogaxis}[bwaxis, xlabel={ladder nodes $n$},
+  ylabel={wall clock / ms}, legend pos=north west]
+\addplot[black, mark=*, mark size=1.6pt] table {data/bench.dat};
+\addplot[black, dashed, domain=1000:30000] {x*0.00386};
+\addplot[black, dotted, domain=1000:30000, line width=0.6pt] {x^2*1.56e-6};
+\legend{measured, $\propto n$, $\propto n^2$}
+\end{loglogaxis}
+\end{tikzpicture}
+\end{center}
+
+Below about $10^3$ nodes the 2.4\,ms process startup dominates. The
+elimination itself follows the $n$ guide; the departure toward the $n^2$
+guide beyond $10^4$ unknowns is the pivot search probing every remaining
+row per column, the price of having no column-linked index structure
+(section~\ref{sec:sparse}).
+
 \section{Validation}
 \locbar{tests/cli.rs}{330 lines, 0 of 992: tests are free}{0}{0}
 
@@ -1087,6 +1238,7 @@ feature & why it lost & est. lines \\
 \midrule
 \texttt{.subckt} hierarchy & lost to the transistor models & $\sim$100 \\
 Markowitz ordering & netlist order suffices at this scale & $\sim$80 \\
+pivot candidate lists & $O(n^2)$ probing acceptable at this scale & $\sim$30 \\
 Gummel-Poon BJT & Ebers-Moll covers the teaching core & $\sim$80 \\
 noise analysis & needs the adjoint system & $\sim$80 \\
 \texttt{.param} expressions & a calculator is its own project & $\sim$60 \\

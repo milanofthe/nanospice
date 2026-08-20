@@ -76,7 +76,8 @@ LOC budget guard. Tests and comments do not count toward the budget.
 
 The prebuilt PDF is committed at report/nanospice.pdf. Slides for a 30
 minute talk, same content and style, are in talk/ with the prebuilt PDF at
-talk/slides.pdf.
+talk/slides.pdf. The plots in both read data files from report/data/,
+regenerated from the release binary with python3 report/data/gen.py.
 
 ## License
 
