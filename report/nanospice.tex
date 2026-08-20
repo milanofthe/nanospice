@@ -10,6 +10,7 @@
 \usepackage{pgfplots}
 \pgfplotsset{compat=1.17}
 \usetikzlibrary{calc}
+\tikzset{vcenter/.style={baseline={(current bounding box.center)}}}
 \pgfplotsset{bwaxis/.style={
   width=0.6\textwidth, height=0.34\textwidth, line width=0.4pt,
   tick style={black}, label style={font=\small},
@@ -171,7 +172,7 @@ g & -g & 1 \\
 v_1 = 10, \;\; v_2 = 5, \;\; i = -5\,\text{mA}.
 \]
 \begin{center}
-\begin{circuitikz}[american, scale=0.9]
+\begin{circuitikz}[vcenter, american, scale=0.9]
 \draw (0,0) node[ground]{} to[V, invert, l=$10\,\mathrm{V}$] (0,2.4) -- (1.8,2.4)
   node[circ]{} node[above]{$v_1$}
   to[R, l=$1\,\mathrm{k\Omega}$] (4.4,2.4) node[circ]{} node[above]{$v_2$}
@@ -755,7 +756,7 @@ divided difference after every accepted step, one update rule for both
 element types.
 
 \begin{center}
-\begin{circuitikz}[american]
+\begin{circuitikz}[vcenter, american]
 \draw (0,3.4) node[circ]{} node[above]{$p$} to[C, l=$C$] (0,0) node[circ]{} node[below]{$n$};
 \node at (1.5,1.7) {$\rightarrow$};
 \draw (3.0,3.4) node[circ]{} node[above]{$p$} -- (5.4,3.4);
@@ -764,7 +765,7 @@ element types.
 \draw (3.0,0) node[circ]{} node[below]{$n$} -- (5.4,0);
 \end{circuitikz}
 \hspace{14mm}
-\begin{circuitikz}[american]
+\begin{circuitikz}[vcenter, american]
 \draw (0,3.4) node[circ]{} node[above]{$p$} to[L, l=$L$] (0,0) node[circ]{} node[below]{$n$};
 \node at (1.5,1.7) {$\rightarrow$};
 \draw (3.0,3.4) node[circ]{} node[above]{$p$} to[R, l=$\tfrac{2L}{h}$] (3.0,1.7) to[V, l=$V_{eq}$] (3.0,0) node[circ]{} node[below]{$n$};
@@ -784,7 +785,7 @@ The Ebers-Moll model in transport form is three current branches: the two
 base junctions and the transport source from collector to emitter.
 
 \begin{center}
-\begin{circuitikz}[american, scale=0.9]
+\begin{circuitikz}[vcenter, american, scale=0.9]
 \draw (2.6,4.4) node[circ]{} node[above]{$c$} -- (2.6,3.6);
 \draw (0,2.2) node[circ]{} node[left]{$b$} -- (0.7,2.2);
 \draw (0.7,2.2) to[D, l=$i_{BC}$] (2.6,3.6);
@@ -1052,13 +1053,13 @@ the figures read. Analytic references are drawn dashed.
 The first transient test in the suite, plotted against its closed form:
 
 \begin{center}
-\begin{circuitikz}[american, scale=0.85, transform shape]
+\begin{circuitikz}[vcenter, american, scale=0.85, transform shape]
 \draw (0,0) node[ground]{} to[V, invert, l=$v_{step}$] (0,2.2)
   to[R, l=$1\,\mathrm{k\Omega}$] (2.8,2.2) node[circ]{} node[above]{$v_{out}$}
   to[C, l=$1\,\mu\mathrm{F}$] (2.8,0) node[ground]{};
 \end{circuitikz}
 \hspace{8mm}
-\begin{tikzpicture}
+\begin{tikzpicture}[vcenter]
 \begin{axis}[bwaxis, width=0.5\textwidth, height=0.34\textwidth,
   xlabel={$t$ / ms}, ylabel={$v_{out}$ / V}, legend pos=south east]
 \addplot[black, thick] table {data/rc.dat};
@@ -1073,7 +1074,7 @@ Two square-law transistors, swept with \texttt{.dc}; the finite
 transition slope is the channel-length modulation $\lambda = 0.05$:
 
 \begin{center}
-\begin{circuitikz}[american, scale=0.85, transform shape]
+\begin{circuitikz}[vcenter, american, scale=0.85, transform shape]
 \draw (0,2.6) node[pmos](P){};
 \draw (0,1.0) node[nmos](N){};
 \draw (P.D) -- (N.D);
@@ -1084,7 +1085,7 @@ transition slope is the channel-length modulation $\lambda = 0.05$:
 \draw ($(P.D)!0.5!(N.D)$) node[circ]{} -- ++(1.0,0) node[right]{$v_{out}$};
 \end{circuitikz}
 \hspace{8mm}
-\begin{tikzpicture}
+\begin{tikzpicture}[vcenter]
 \begin{axis}[bwaxis, width=0.5\textwidth, height=0.36\textwidth,
   xlabel={$v_{in}$ / V}, ylabel={$v_{out}$ / V}]
 \addplot[black, thick] table {data/inverter.dat};
@@ -1099,7 +1100,7 @@ capacitor at the input. Midband gain $g_m R_C \approx 240$
 capacitors:
 
 \begin{center}
-\begin{circuitikz}[american, scale=0.8, transform shape]
+\begin{circuitikz}[vcenter, american, scale=0.8, transform shape]
 \draw (0,2) to[V, invert, l=$v_{in}$] (0,0) node[ground]{};
 \draw (0,2) to[C, l=$C_{in}$] (2.4,2) node[circ]{};
 \draw (2.4,4.2) to[R, l=$R_1$] (2.4,2) to[R, l=$R_2$] (2.4,-0.2) node[ground]{};
@@ -1112,7 +1113,7 @@ capacitors:
 \draw (q.E) -- ++(1.4,0) to[C, l=$C_E$] ($(q.E)+(1.4,-1.7)$) node[ground]{};
 \end{circuitikz}
 \hspace{6mm}
-\begin{tikzpicture}
+\begin{tikzpicture}[vcenter]
 \begin{semilogxaxis}[bwaxis, width=0.46\textwidth, height=0.38\textwidth,
   xlabel={$f$ / Hz}, ylabel={$|v_{out}/v_{in}|$ / dB}]
 \addplot[black, thick] table {data/ce_bode.dat};
@@ -1126,13 +1127,13 @@ The trapezoidal rule is undamped, so the amplitude holds at
 $i_0 \sqrt{L/C} = 31.6$\,mV (dashed):
 
 \begin{center}
-\begin{circuitikz}[american, scale=0.85, transform shape]
+\begin{circuitikz}[vcenter, american, scale=0.85, transform shape]
 \draw (0,2.2) node[circ]{} node[above]{$a$} -- (2.2,2.2)
   to[C, l=$1\,\mu\mathrm{F}$] (2.2,0);
 \draw (0,2.2) to[L, l=$1\,\mathrm{mH}$, i>_=$i_0$] (0,0) -- (2.2,0) node[ground]{};
 \end{circuitikz}
 \hspace{8mm}
-\begin{tikzpicture}
+\begin{tikzpicture}[vcenter]
 \begin{axis}[bwaxis, width=0.56\textwidth, height=0.32\textwidth,
   xlabel={$t$ / $\mu$s}, ylabel={$v$ / mV}]
 \addplot[black] table {data/lc.dat};
@@ -1148,7 +1149,7 @@ short current kick moves the circuit off its metastable operating point,
 then the ring settles to a 78\,ns period:
 
 \begin{center}
-\begin{circuitikz}[american, scale=0.8, transform shape]
+\begin{circuitikz}[vcenter, american, scale=0.8, transform shape]
 \draw (0,0) node[not port](n1){};
 \draw (2.6,0) node[not port](n2){};
 \draw (5.2,0) node[not port](n3){};
@@ -1162,7 +1163,7 @@ then the ring settles to a 78\,ns period:
 \end{center}
 
 \begin{center}
-\begin{tikzpicture}
+\begin{tikzpicture}[vcenter]
 \begin{axis}[bwaxis, width=0.8\textwidth, height=0.3\textwidth,
   xlabel={$t$ / ns}, ylabel={$v_a$ / V}]
 \addplot[black] table {data/ring.dat};
@@ -1176,7 +1177,7 @@ whole process (parse, solve, print one column), best of several runs on
 an Apple M3, release build:
 
 \begin{center}
-\begin{circuitikz}[american, scale=0.8, transform shape]
+\begin{circuitikz}[vcenter, american, scale=0.8, transform shape]
 \draw (0,0) node[ground]{} to[V, invert, l=$10\,\mathrm{V}$] (0,1.8)
   to[R, l=$R_s$] (2.2,1.8) node[circ]{} to[R, l=$R_p$] (2.2,0) node[ground]{};
 \draw (2.2,1.8) to[R, l=$R_s$] (4.4,1.8) node[circ]{} to[R, l=$R_p$] (4.4,0) node[ground]{};
@@ -1185,7 +1186,7 @@ an Apple M3, release build:
 \end{center}
 
 \begin{center}
-\begin{tikzpicture}
+\begin{tikzpicture}[vcenter]
 \begin{loglogaxis}[bwaxis, xlabel={ladder nodes $n$},
   ylabel={wall clock / ms}, legend pos=north west]
 \addplot[black, mark=o, mark size=1.6pt] table {data/bench_scan.dat};
