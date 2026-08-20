@@ -451,7 +451,7 @@ fn branch(&mut self, p: usize, n: usize, br: usize) {
 \begin{decision}{a dummy ground row}
 Ground is unknown 0 and the solver loops start at 1. The alternative is
 an \emph{if node is not ground} test inside every stamp, roughly two
-dozen branches across ten devices. One guard inside \texttt{add}
+dozen branches across eleven devices. One guard inside \texttt{add}
 replaces all of them, and $x_0 = 0$ is pinned after the solve. The
 conductance quad above also covers the VCCS (rows at the output nodes,
 columns at the controlling nodes), and \texttt{branch} writes the
