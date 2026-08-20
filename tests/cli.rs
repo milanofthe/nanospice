@@ -147,6 +147,47 @@ fn tran_rl() {
 }
 
 #[test]
+fn tran_diode_cap() {
+    // reverse biased diode with cjo acts as a linear capacitor: rc response
+    let rows = run(
+        "dcap.cir",
+        "d cap\nv1 in 0 pulse 0 1 0 1n 1n 1 2\nr1 in b 1k\nd1 0 b cjo=1u\n.tran 10u 5m\n.end\n",
+    );
+    let (h, d) = table(&rows, "tran");
+    let c = col(&h, "v(b)");
+    for r in &d {
+        let refv = 1.0 - (-r[0] / 1e-3).exp();
+        assert!((r[c] - refv).abs() < 1e-2, "t={} v={} ref={}", r[0], r[c], refv);
+    }
+}
+
+#[test]
+fn tran_ring_oscillator() {
+    // 3-stage cmos ring: the gate capacitances give it a defined period
+    let nl = "ring\n.model n nmos kp=1e-3 vt0=1 cgs=5p cgd=2p\n\
+              .model p pmos kp=1e-3 vt0=1 cgs=5p cgd=2p\nvdd vdd 0 dc 5\n\
+              m1 b a 0 0 n\nm2 b a vdd vdd p\nm3 c b 0 0 n\nm4 c b vdd vdd p\n\
+              m5 a c 0 0 n\nm6 a c vdd vdd p\ni1 0 a pulse(0 1m 0 1n 1n 20n)\n\
+              .print v(a)\n.tran 1n 500n\n.end\n";
+    let rows = run("ring.cir", nl);
+    let (h, d) = table(&rows, "tran");
+    let c = col(&h, "v(a)");
+    let mut crossings = Vec::new();
+    for w in d.windows(2) {
+        if w[0][c] < 2.5 && w[1][c] >= 2.5 {
+            crossings.push(w[1][0]);
+        }
+    }
+    assert!(crossings.len() >= 5, "only {} rising crossings", crossings.len());
+    // period must be stable after startup
+    let periods: Vec<f64> = crossings.windows(2).map(|w| w[1] - w[0]).collect();
+    let last = periods[periods.len() - 1];
+    for p in periods.iter().skip(1) {
+        assert!((p - last).abs() / last < 0.1, "period jitter: {:?}", periods);
+    }
+}
+
+#[test]
 fn tran_pwl() {
     // triangle from a pwl source: the source node must track the exact
     // interpolation at every output time

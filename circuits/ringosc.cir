@@ -1,0 +1,15 @@
+cmos ring oscillator, period set by the gate capacitances
+.model n nmos kp=1e-3 vt0=1 cgs=5p cgd=2p
+.model p pmos kp=1e-3 vt0=1 cgs=5p cgd=2p
+vdd vdd 0 dc 5
+m1 b a 0 0 n
+m2 b a vdd vdd p
+m3 c b 0 0 n
+m4 c b vdd vdd p
+m5 a c 0 0 n
+m6 a c vdd vdd p
+* current kick to leave the metastable operating point
+i1 0 a pulse(0 1m 0 1n 1n 20n)
+.print v(a)
+.tran 1n 500n
+.end

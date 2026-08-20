@@ -147,12 +147,8 @@ fn wave_val(dc: f64, wave: &Option<Wave>, t: f64) -> f64 {
     match wave {
         None => dc,
         Some(Wave::Sin { vo, va, fr, td, theta }) => {
-            if t < *td {
-                *vo
-            } else {
-                let tp = t - td;
-                vo + va * (-tp * theta).exp() * (2.0 * PI * fr * tp).sin()
-            }
+            let tp = (t - td).max(0.0);
+            vo + va * (-tp * theta).exp() * (2.0 * PI * fr * tp).sin()
         }
         Some(Wave::Pwl { pts, per }) => {
             let t0 = pts[0].0;
@@ -301,13 +297,9 @@ fn parse(src: &str) -> Circuit {
             continue;
         }
         if let Some(rest) = line.strip_prefix('+') {
-            match lines.last_mut() {
-                Some(prev) => {
-                    prev.push(' ');
-                    prev.push_str(rest);
-                }
-                None => die("continuation line without a preceding line"),
-            }
+            let prev = lines.last_mut().unwrap_or_else(|| die("continuation line without a preceding line"));
+            prev.push_str(" ");
+            prev.push_str(rest);
         } else {
             lines.push(line);
         }
@@ -393,6 +385,7 @@ fn parse(src: &str) -> Circuit {
             nodes.push(s.into());
             i
         };
+        let mut caps: Vec<(usize, usize, f64)> = Vec::new();
         let dev = match toks[0].chars().next().unwrap() {
             'r' => Dev::R { p: nid(tok(&toks, 1)), n: nid(tok(&toks, 2)), v: numx(tok(&toks, 3)) },
             'c' => Dev::C {
@@ -418,21 +411,21 @@ fn parse(src: &str) -> Circuit {
             }
             'd' => {
                 let ext = expand(3);
-                Dev::D {
-                    p: nid(tok(&toks, 1)),
-                    n: nid(tok(&toks, 2)),
-                    is: pval(&ext, "is", 1e-14),
-                    nf: pval(&ext, "n", 1.0),
-                }
+                let (p, n) = (nid(tok(&toks, 1)), nid(tok(&toks, 2)));
+                caps.push((p, n, pval(&ext, "cjo", 0.0)));
+                Dev::D { p, n, is: pval(&ext, "is", 1e-14), nf: pval(&ext, "n", 1.0) }
             }
             // the jfet is the square law device again: kp = 2 beta and a
             // depletion threshold, so it shares the mosfet variant
             c @ ('m' | 'j') => {
                 let ext = expand(if c == 'm' { 5 } else { 4 });
+                let (nd, ng, ns) = (nid(tok(&toks, 1)), nid(tok(&toks, 2)), nid(tok(&toks, 3)));
+                caps.push((ng, ns, pval(&ext, "cgs", 0.0)));
+                caps.push((ng, nd, pval(&ext, "cgd", 0.0)));
                 Dev::M {
-                    d: nid(tok(&toks, 1)),
-                    g: nid(tok(&toks, 2)),
-                    s: nid(tok(&toks, 3)),
+                    d: nd,
+                    g: ng,
+                    s: ns,
                     kp: if c == 'm' { pval(&ext, "kp", 2e-5) } else { 2.0 * pval(&ext, "beta", 1e-4) },
                     vt0: pval(&ext, "vt0", pval(&ext, "vto", if c == 'm' { 0.0 } else { -2.0 })),
                     lambda: pval(&ext, "lambda", 0.0),
@@ -456,10 +449,13 @@ fn parse(src: &str) -> Circuit {
             },
             'q' => {
                 let ext = expand(4);
+                let (nc, nb, ne) = (nid(tok(&toks, 1)), nid(tok(&toks, 2)), nid(tok(&toks, 3)));
+                caps.push((nb, ne, pval(&ext, "cje", 0.0)));
+                caps.push((nb, nc, pval(&ext, "cjc", 0.0)));
                 Dev::Q {
-                    c: nid(tok(&toks, 1)),
-                    b: nid(tok(&toks, 2)),
-                    e: nid(tok(&toks, 3)),
+                    c: nc,
+                    b: nb,
+                    e: ne,
                     is: pval(&ext, "is", 1e-16),
                     bf: pval(&ext, "bf", 100.0),
                     br: pval(&ext, "br", 1.0),
@@ -470,6 +466,13 @@ fn parse(src: &str) -> Circuit {
         };
         devs.push(dev);
         names.push(toks[0].to_string());
+        // junction and gate capacitances desugar into plain capacitors
+        for (a, b, cv) in caps {
+            if cv > 0.0 {
+                devs.push(Dev::C { p: a, n: b, v: cv, ic: f64::NAN });
+                names.push(format!("c.{}", toks[0]));
+            }
+        }
     }
     let nn = nodes.len();
     let mut nb = 0;
@@ -679,7 +682,7 @@ fn mos_op(dv: &Dev, x: &[f64]) -> (usize, usize, f64, f64, f64) {
 
 enum Mode<'a> {
     Dc { fac: f64 },
-    Tran { h: f64, t: f64, st: &'a [[f64; 2]] },
+    Tran { h: f64, t: f64, st: &'a [[f64; 2]], be: bool },
 }
 
 fn assemble(ckt: &Circuit, x: &[f64], lim: &mut [[f64; 2]], mode: &Mode, gmin: f64, limited: &mut bool) -> Sys<f64> {
@@ -690,16 +693,17 @@ fn assemble(ckt: &Circuit, x: &[f64], lim: &mut [[f64; 2]], mode: &Mode, gmin: f
         match dv {
             Dev::R { p, n, v } => s.contrib(*p, *n, (x[*p] - x[*n]) / v, &[(*p, *n, 1.0 / v)], x),
             Dev::C { p, n, v, .. } => {
-                if let Mode::Tran { h, st, .. } = mode {
-                    let geq = 2.0 * v / h;
-                    let hist = geq * st[di][0] + st[di][1];
+                if let Mode::Tran { h, st, be, .. } = mode {
+                    let geq = if *be { v / h } else { 2.0 * v / h };
+                    let hist = geq * st[di][0] + if *be { 0.0 } else { st[di][1] };
                     s.contrib(*p, *n, geq * (x[*p] - x[*n]) - hist, &[(*p, *n, geq)], x);
                 }
             }
             Dev::L { p, n, v, br, .. } => match mode {
-                Mode::Tran { h, st, .. } => {
-                    let req = 2.0 * v / h;
-                    s.vcontrib(*p, *n, *br, -(req * st[di][0] + st[di][1]), &[(*br, 0, req)]);
+                Mode::Tran { h, st, be, .. } => {
+                    let req = if *be { v / h } else { 2.0 * v / h };
+                    let vh = req * st[di][0] + if *be { 0.0 } else { st[di][1] };
+                    s.vcontrib(*p, *n, *br, -vh, &[(*br, 0, req)]);
                 }
                 _ => s.vcontrib(*p, *n, *br, 0.0, &[]),
             },
@@ -746,14 +750,17 @@ fn assemble(ckt: &Circuit, x: &[f64], lim: &mut [[f64; 2]], mode: &Mode, gmin: f
     s
 }
 
+fn branches(ckt: &Circuit) -> impl Iterator<Item = &String> {
+    let is_br = |d: &&Dev| matches!(d, Dev::L { .. } | Dev::V { .. } | Dev::E { .. });
+    ckt.devs.iter().zip(&ckt.names).filter(move |(d, _)| is_br(d)).map(|(_, n)| n)
+}
+
 fn unk_name(ckt: &Circuit, i: usize) -> String {
     if i < ckt.nodes.len() {
         return format!("node {}", ckt.nodes[i]);
     }
-    let mut branches =
-        ckt.devs.iter().zip(&ckt.names).filter(|(d, _)| matches!(d, Dev::L { .. } | Dev::V { .. } | Dev::E { .. }));
-    match branches.nth(i - ckt.nodes.len()) {
-        Some((_, n)) => format!("branch {}", n),
+    match branches(ckt).nth(i - ckt.nodes.len()) {
+        Some(n) => format!("branch {}", n),
         None => format!("unknown {}", i),
     }
 }
@@ -819,16 +826,17 @@ fn init_state(ckt: &Circuit, x: &[f64], uic: bool) -> Vec<[f64; 2]> {
         .collect()
 }
 
-fn update_state(ckt: &Circuit, x: &[f64], h: f64, st: &mut [[f64; 2]]) {
+fn update_state(ckt: &Circuit, x: &[f64], h: f64, st: &mut [[f64; 2]], be: bool) {
+    let (f, m) = if be { (1.0, 0.0) } else { (2.0, 1.0) };
     for (k, d) in ckt.devs.iter().enumerate() {
         match d {
             Dev::C { p, n, v, .. } => {
                 let vn = x[*p] - x[*n];
-                st[k] = [vn, 2.0 * v / h * (vn - st[k][0]) - st[k][1]];
+                st[k] = [vn, f * v / h * (vn - st[k][0]) - m * st[k][1]];
             }
             Dev::L { v, br, .. } => {
                 let inw = x[*br];
-                st[k] = [inw, 2.0 * v / h * (inw - st[k][0]) - st[k][1]];
+                st[k] = [inw, f * v / h * (inw - st[k][0]) - m * st[k][1]];
             }
             _ => {}
         }
@@ -838,13 +846,8 @@ fn update_state(ckt: &Circuit, x: &[f64], h: f64, st: &mut [[f64; 2]]) {
 // ----------------------------------------------------------------- output ---
 
 fn columns(ckt: &Circuit) -> Vec<String> {
-    let mut c: Vec<String> = (1..ckt.nodes.len()).map(|i| format!("v({})", ckt.nodes[i])).collect();
-    for (k, d) in ckt.devs.iter().enumerate() {
-        if matches!(d, Dev::L { .. } | Dev::V { .. } | Dev::E { .. }) {
-            c.push(format!("i({})", ckt.names[k]));
-        }
-    }
-    c
+    let v = (1..ckt.nodes.len()).map(|i| format!("v({})", ckt.nodes[i]));
+    v.chain(branches(ckt).map(|n| format!("i({})", n))).collect()
 }
 
 // Printed columns and their unknown indices; empty .print means everything.
@@ -982,9 +985,11 @@ fn run_tran(ckt: &Circuit, tstep: f64, tstop: f64, uic: bool) {
             let l2 = hs * (hs + d1) / ((d1 + d2) * d2);
             (0..m).map(|i| l0 * x[i] + l1 * old[0].0[i] + l2 * old[1].0[i]).collect()
         });
-        // the predictor doubles as the Newton starting point
+        // the predictor doubles as the Newton starting point; the two
+        // predictor-less bootstrap steps run damped backward euler
+        let be = old.len() < 2;
         let mut xn = pred.clone().unwrap_or_else(|| x.clone());
-        let mode = Mode::Tran { h: hs, t: t + hs, st: &st };
+        let mode = Mode::Tran { h: hs, t: t + hs, st: &st, be };
         let Some(iters) = newton(ckt, &mut xn, &mut lim, &mode, GMIN, ITL_TRAN) else {
             h = hs / 8.0;
             if h < hmin {
@@ -1012,7 +1017,7 @@ fn run_tran(ckt: &Circuit, tstep: f64, tstop: f64, uic: bool) {
             hnew = (hs * scale.clamp(0.3, 2.0)).min(tstep);
         }
         t += hs;
-        update_state(ckt, &xn, hs, &mut st);
+        update_state(ckt, &xn, hs, &mut st, be);
         old.insert(0, (x, hs));
         old.truncate(2);
         x = xn;
@@ -1036,24 +1041,13 @@ fn run_ac(ckt: &Circuit, dec: bool, n: usize, f1: f64, f2: f64) {
     let (m, x, mut lim) = op_setup(ckt);
     // The real part of the AC matrix is exactly the DC Jacobian at the OP.
     let sdc = assemble(ckt, &x, &mut lim, &Mode::Dc { fac: 1.0 }, GMIN, &mut false);
-    let mut freqs = Vec::new();
-    if dec {
-        let mut k = 0;
-        loop {
-            let f = f1 * 10f64.powf(k as f64 / n as f64);
-            if f > f2 * (1.0 + 1e-9) {
-                break;
-            }
-            freqs.push(f);
-            k += 1;
-        }
+    let freqs: Vec<f64> = if dec {
+        (0..).map(|k| f1 * 10f64.powf(k as f64 / n as f64)).take_while(|f| *f <= f2 * (1.0 + 1e-9)).collect()
     } else if n == 1 {
-        freqs.push(f1);
+        vec![f1]
     } else {
-        for k in 0..n {
-            freqs.push(f1 + (f2 - f1) * k as f64 / (n as f64 - 1.0));
-        }
-    }
+        (0..n).map(|k| f1 + (f2 - f1) * k as f64 / (n as f64 - 1.0)).collect()
+    };
     let (names, idx) = selection(ckt);
     out!("# ac");
     let hdr: Vec<String> = names
