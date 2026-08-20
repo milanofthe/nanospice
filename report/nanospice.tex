@@ -58,8 +58,8 @@
 {\small\texttt{#1}\hfill #2}\\[4pt]
 \begin{tikzpicture}
 \pgfmathsetlengthmacro{\bw}{\linewidth-4pt}
-\fill[pattern=north east lines] (0,0) rectangle ({(#3/986)*\bw}, 4.5pt);
-\fill[black] ({(#3/986)*\bw},0) rectangle ({(#4/986)*\bw}, 4.5pt);
+\fill[pattern=north east lines] (0,0) rectangle ({(#3/977)*\bw}, 4.5pt);
+\fill[black] ({(#3/977)*\bw},0) rectangle ({(#4/977)*\bw}, 4.5pt);
 \draw[black, line width=0.4pt] (0,0) rectangle (\bw, 4.5pt);
 \end{tikzpicture}%
 \end{tcolorbox}\medskip}
@@ -107,13 +107,13 @@ code section & lines & cumulative \\
 \midrule
 constants, error and output plumbing & 23 & 23 \\
 numbers: \texttt{Num} trait, complex, unit suffixes & 78 & 101 \\
-circuit data model & 65 & 166 \\
-parser & 266 & 432 \\
-sparse LU and stamp helpers & 113 & 545 \\
-device models & 50 & 595 \\
-solver: assembly, Newton, operating point & 142 & 737 \\
-output selection & 31 & 768 \\
-analyses and main & 218 & 986 \\
+circuit data model & 61 & 162 \\
+parser & 272 & 434 \\
+sparse LU and stamp helpers & 113 & 547 \\
+device models & 50 & 597 \\
+solver: assembly, Newton, operating point & 146 & 743 \\
+output selection & 26 & 769 \\
+analyses and main & 208 & 977 \\
 \bottomrule
 \end{tabular}
 \caption{Line budget by code section, in file order.}
@@ -288,7 +288,7 @@ netlist containing a literal micro sign must produce \emph{bad number},
 not a crash.
 
 \section{The circuit data model}
-\locbar{circuit data model}{65 lines, budget 101 to 166}{101}{166}
+\locbar{circuit data model}{61 lines, budget 101 to 162}{101}{162}
 
 A circuit is four vectors: devices, their names, node names, and the
 requested analyses, plus the branch count. Devices are one enum:
@@ -332,7 +332,7 @@ wrapper and its pattern matching at every use site; NaN is unambiguous
 here because a NaN initial condition is meaningless anyway.
 
 \section{The parser}
-\locbar{parser}{266 lines, budget 166 to 432}{166}{432}
+\locbar{parser}{272 lines, budget 162 to 434}{162}{434}
 
 The parser is the largest section. Preprocessing
 runs once per line: strip trailing comments after \texttt{;}, lowercase,
@@ -383,6 +383,22 @@ letters, unparseable numbers, missing tokens, unknown sweep sources. A
 fuzz test feeds seven classes of malformed netlist to the binary and
 requires a clean named error and no panic for each.
 
+\begin{decision}{junction capacitances by desugaring}
+Junction and gate capacitances (\texttt{cjo} on the diode, \texttt{cje}
+and \texttt{cjc} on the BJT, \texttt{cgs} and \texttt{cgd} on MOSFET
+and JFET) are constant capacitances in this simulator, and a constant
+capacitance across a node pair is exactly the \texttt{C} device. The
+parser therefore desugars them: a device line with capacitance parameters
+pushes internal \texttt{Dev::C} instances alongside the device. No
+assembly, state, timestep, or AC code knows they exist; transient
+integration, LTE control, and the $j\omega C$ stamps come along for
+free. The price of the simplification is the missing depletion
+nonlinearity $C_j(v)$, which changes waveform shapes but not the
+RC-limited switching behavior. With the capacitances present, transistors
+switch in finite time and a three-stage ring oscillator has a defined
+period; an integration test measures it and requires it to be stable.
+\end{decision}
+
 \begin{decision}{no subcircuits}
 \texttt{.subckt} costs roughly a hundred lines of name spacing, port
 mapping, and flattening. Real decks are hierarchical, so this is the most
@@ -391,7 +407,7 @@ models.
 \end{decision}
 
 \section{Sparse LU}
-\locbar{sparse LU}{113 lines, budget 432 to 545}{432}{545}
+\locbar{sparse LU}{113 lines, budget 434 to 547}{434}{547}
 
 Gaussian elimination factors $PA = LU$ with row pivoting and then solves
 by substitution. Dense, this is 25 lines and $O(n^3)$, and it was the
@@ -541,7 +557,7 @@ case therefore degrades toward dense cost, which for the circuit sizes a
 
 \section{Device models}
 \label{sec:devices}
-\locbar{device models}{50 lines, budget 545 to 595}{545}{595}
+\locbar{device models}{50 lines, budget 547 to 597}{547}{597}
 
 This section holds the semiconductor mathematics: the diode evaluation,
 the junction limiting shared by diode and BJT, and the MOSFET square law.
@@ -667,7 +683,7 @@ parameter defaults and nothing anywhere else.
 
 \section{The solver}
 \label{sec:solver}
-\locbar{solver: assembly, Newton, operating point}{142 lines, budget 595 to 737}{595}{737}
+\locbar{solver: assembly, Newton, operating point}{146 lines, budget 597 to 743}{597}{743}
 
 \paragraph{Companion linearization.}
 A nonlinear device current $i(v)$ enters the linear system as its tangent
@@ -857,7 +873,7 @@ can converge to the wrong branch. A cross-coupled NMOS latch in the test
 suite exercises the path.
 
 \section{Output selection}
-\locbar{output}{31 lines, budget 737 to 768}{737}{768}
+\locbar{output}{26 lines, budget 743 to 769}{743}{769}
 
 Output columns are the node voltages in netlist order followed by the
 branch currents in device order, named \texttt{v(node)} and
@@ -868,7 +884,7 @@ every analysis row is then a gather over that index list.
 
 \section{Analyses}
 \label{sec:analyses}
-\locbar{analyses and main}{218 lines, budget 768 to 986}{768}{986}
+\locbar{analyses and main}{208 lines, budget 769 to 977}{769}{977}
 
 \paragraph{Operating point and DC sweep.}
 \texttt{.op} is one call into the operating point solver.
@@ -955,6 +971,15 @@ parsed into its four corners) is registered as a breakpoint, steps are
 clamped to land on breakpoints exactly, and after crossing one the
 integrator restarts with a small step and cleared predictor history,
 because the waveform derivative is discontinuous there.
+
+The restart steps carry one more safeguard: while the predictor has no
+history, at startup and right after a breakpoint, the companion models
+switch from the trapezoidal rule to backward Euler. Backward Euler is
+first order but strongly damped, so the ringing the trapezoidal rule
+produces at discontinuities is absorbed in the two bootstrap steps, after
+which the undamped second-order rule resumes. This is the damped-restart
+scheme used by modern simulators, and it costs a boolean on the transient
+mode.
 \end{fieldnote}
 
 \paragraph{Small-signal AC.}
@@ -978,9 +1003,9 @@ Frequencies sweep linearly or per decade
 phase.
 
 \section{Validation}
-\locbar{tests/cli.rs}{285 lines, 0 of 986: tests are free}{0}{0}
+\locbar{tests/cli.rs}{321 lines, 0 of 977: tests are free}{0}{0}
 
-The test suite is 20 integration tests that run the built binary on real
+The test suite is 22 integration tests that run the built binary on real
 netlists and parse its CSV. Tests do not count toward the budget, so
 robustness lives there, and the suite prefers references that are
 independent of the implementation: closed-form solutions, physical
@@ -1006,6 +1031,8 @@ test & reference \\
 \texttt{tran\_lte\_fast\_tau} & $\tau = \texttt{tstep}/10$, LTE control must resolve the edge \\
 \texttt{tran\_uic\_lc} & LC amplitude $i_0 \sqrt{L/C}$ from initial conditions \\
 \texttt{tran\_pwl} & pwl triangle tracked exactly at every output time \\
+\texttt{tran\_diode\_cap} & reverse diode \texttt{cjo} behaves as a linear RC \\
+\texttt{tran\_ring\_oscillator} & 3-stage CMOS ring with a stable period \\
 \texttt{tran\_lc\_energy} & no numerical damping over twenty periods \\
 \texttt{ac\_rc} & $1/\sqrt{2}$ magnitude and $-45^\circ$ at the corner \\
 \texttt{print\_selection} & column filtering \\
@@ -1037,7 +1064,7 @@ feature & why it lost & est. lines \\
 \texttt{.subckt} hierarchy & lost to the transistor models & $\sim$100 \\
 Markowitz ordering & netlist order suffices at this scale & $\sim$80 \\
 Gummel-Poon BJT & Ebers-Moll covers the teaching core & $\sim$80 \\
-junction capacitances & needs charge state on every junction & $\sim$60 \\
+nonlinear depletion capacitance & constant $C$ covers the teaching core & $\sim$40 \\
 noise analysis & needs the adjoint system & $\sim$80 \\
 \texttt{.param} expressions & a calculator is its own project & $\sim$60 \\
 temperature sweeps & $V_T$ is a constant, by choice & $\sim$25 \\
@@ -1047,10 +1074,9 @@ current-based convergence check & limiting denial covers the failure mode & $\si
 \caption{Features that did not fit, with the reason and the estimated cost.}
 \end{table}
 
-The most consequential physical cut is the junction capacitances: without
-them the semiconductors are purely static, transistors switch
-instantaneously, and a ring oscillator has no defined frequency. It would
-be the first addition if the budget grew.
+The most consequential remaining cut is \texttt{.subckt}: real decks are
+hierarchical, and flattening them by hand is the main friction in
+practice. It would be the first addition if the budget grew.
 
 On language: the device enum with exhaustive matching carries the parser,
 the assembly, and the output selection, and is the main reason the budget
@@ -1063,13 +1089,13 @@ roughly halve the line count at a different performance class.
 
 \section{Closing}
 
-The final count is 986 of 1000 lines, with the classic algorithm set
+The final count is 977 of 1000 lines, with the classic algorithm set
 complete: MNA, sparse LU with partial pivoting, two Verilog-A style
 contribution primitives carrying all device stamps, Newton with pnjlim
 and both continuation fallbacks as data-driven homotopy paths,
-trapezoidal integration with LTE control and breakpoints, small-signal
-AC, eleven device letters with three source waveforms, four analyses,
-model cards, initial conditions, and output selection. Fourteen lines of
-headroom remain.
+trapezoidal integration with LTE control, breakpoints and damped restart
+steps, junction and gate capacitances, small-signal AC, eleven device
+letters with three source waveforms, four analyses, model cards, initial
+conditions, and output selection. Twenty-three lines of headroom remain.
 
 \end{document}
