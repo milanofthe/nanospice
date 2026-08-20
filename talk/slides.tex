@@ -1,0 +1,584 @@
+\documentclass[11pt, aspectratio=169]{beamer}
+
+\usetheme{default}
+\usefonttheme{serif}
+\setbeamertemplate{navigation symbols}{}
+\setbeamercolor{normal text}{fg=black, bg=white}
+\setbeamercolor{structure}{fg=black}
+\setbeamercolor{frametitle}{fg=black, bg=white}
+\setbeamercolor{title}{fg=black}
+\setbeamertemplate{frametitle}{%
+  \vspace{3mm}{\large\bfseries\insertframetitle}\par\vspace{1.2mm}%
+  \hrule height 0.5pt\vspace{2.5mm}}
+\setbeamertemplate{footline}{%
+  \hfill{\footnotesize\insertframenumber\,/\,\inserttotalframenumber}\hspace{4mm}\vspace{2.5mm}}
+\setbeamertemplate{itemize item}{\rule[0.5ex]{1.1ex}{0.5pt}}
+\setbeamertemplate{itemize subitem}{\rule[0.5ex]{0.8ex}{0.5pt}}
+\setbeamersize{text margin left=9mm, text margin right=9mm}
+
+\usepackage{amsmath, amssymb}
+\usepackage{booktabs}
+\usepackage{listings}
+\usepackage[most]{tcolorbox}
+\usepackage{circuitikz}
+\usetikzlibrary{patterns}
+
+\lstdefinelanguage{Rust}{
+  keywords={fn, let, mut, if, else, while, for, in, match, return, struct,
+    enum, impl, trait, pub, use, const, loop, continue, break, ref, type,
+    where, as, self, Self, true, false, Some, None, Ok, Err},
+  sensitive=true,
+  comment=[l]{//},
+  string=[b]",
+}
+
+\newtcblisting{rust}{listing only, sharp corners, colback=white,
+  colframe=black, boxrule=0.5pt, left=5pt, right=4pt, top=2pt, bottom=2pt,
+  listing options={language=Rust, basicstyle=\footnotesize\ttfamily,
+  commentstyle=\itshape, keywordstyle=\bfseries,
+  columns=fullflexible, keepspaces=true, breaklines=true}}
+
+\newtcolorbox{tile}[1]{sharp corners, colback=white, colframe=black,
+  colbacktitle=white, coltitle=black, titlerule=0.5pt,
+  fonttitle=\bfseries\small, title={#1}, boxrule=0.5pt,
+  left=6pt, right=6pt, top=4pt, bottom=5pt, fontupper=\small}
+
+% loc tile: code section name, label, budget range [start, end] of 992
+\newcommand{\locbar}[4]{%
+\begin{tcolorbox}[sharp corners, colback=white, colframe=black,
+  boxrule=0.5pt, left=6pt, right=6pt, top=3pt, bottom=5pt]
+{\footnotesize\texttt{#1}\hfill #2}\\[3pt]
+\begin{tikzpicture}
+\pgfmathsetlengthmacro{\bw}{\linewidth-4pt}
+\fill[pattern=north east lines] (0,0) rectangle ({(#3/992)*\bw}, 4pt);
+\fill[black] ({(#3/992)*\bw},0) rectangle ({(#4/992)*\bw}, 4pt);
+\draw[black, line width=0.4pt] (0,0) rectangle (\bw, 4pt);
+\end{tikzpicture}%
+\end{tcolorbox}}
+
+\title{\textbf{nanospice}}
+\subtitle{A SPICE circuit simulator in 1000 lines of Rust}
+\author{Milan Rother}
+\date{2026 \\[3mm] {\footnotesize github.com/milanofthe/nanospice}}
+
+\begin{document}
+
+\begin{frame}
+\titlepage
+\end{frame}
+
+\begin{frame}{The rule}
+\begin{itemize}
+\item one file, \texttt{src/main.rs}, at most 1000 nonblank, noncomment lines
+\item standard library only, no dependencies
+\item a test counts the lines and fails the build above the limit
+\item tests, comments, and example netlists are free
+\end{itemize}
+\vspace{3mm}
+The budget forces every feature to displace another, which makes the cost
+of each decision explicit, and it keeps the simulator readable in one
+sitting.
+\vspace{3mm}
+\begin{center}
+current count: \textbf{992 of 1000}
+\end{center}
+\end{frame}
+
+\begin{frame}{What fits}
+\begin{columns}[T]
+\column{0.48\textwidth}
+\textbf{Analyses}
+\begin{itemize}
+\item \texttt{.op}, \texttt{.dc} sweep
+\item \texttt{.tran} with adaptive timestep, \texttt{uic}
+\item \texttt{.ac} dec/lin
+\end{itemize}
+\vspace{2mm}
+\textbf{Devices}
+\begin{itemize}
+\item R, C, L, V, I, E, G
+\item diode, MOSFET, JFET, BJT
+\item junction and gate capacitances
+\end{itemize}
+\column{0.48\textwidth}
+\textbf{Solver}
+\begin{itemize}
+\item sparse LU with partial pivoting
+\item Newton with junction limiting
+\item gmin and source stepping
+\item trapezoid, LTE control, breakpoints
+\end{itemize}
+\vspace{2mm}
+\textbf{Input}
+\begin{itemize}
+\item SIN, PULSE, PWL waveforms
+\item \texttt{.model}, \texttt{.print} cards
+\end{itemize}
+\end{columns}
+\vspace{3mm}
+\begin{center}
+23 integration tests against analytic references, none of them counted
+\end{center}
+\end{frame}
+
+\begin{frame}{Where the lines go}
+\begin{center}
+\begin{tabular}{lrr}
+\toprule
+code section & lines & cumulative \\
+\midrule
+constants, error and output plumbing & 23 & 23 \\
+numbers: \texttt{Num} trait, complex, unit suffixes & 78 & 101 \\
+circuit data model & 61 & 162 \\
+parser & 275 & 437 \\
+sparse LU and stamp helpers & 113 & 550 \\
+device models & 64 & 614 \\
+solver: assembly, Newton, operating point & 142 & 756 \\
+output selection & 26 & 782 \\
+analyses and main & 210 & 992 \\
+\bottomrule
+\end{tabular}
+\end{center}
+\vspace{2mm}
+The parser is the largest section: the numerics of a circuit simulator
+are compact, the input format is not.
+\end{frame}
+
+\begin{frame}{Modified nodal analysis}
+Unknowns: node voltages plus one branch current per voltage-defined
+element (V, L, E). KCL per node, one constraint row per branch.
+\vspace{2mm}
+\begin{columns}[c]
+\column{0.4\textwidth}
+\begin{center}
+\begin{circuitikz}[american, scale=0.75, transform shape]
+\draw (0,0) node[ground]{} to[V, invert, l=$10\,\mathrm{V}$] (0,2.4) -- (1.8,2.4)
+  node[circ]{} node[above]{$v_1$}
+  to[R, l=$1\,\mathrm{k\Omega}$] (4.4,2.4) node[circ]{} node[above]{$v_2$}
+  to[R, l=$1\,\mathrm{k\Omega}$] (4.4,0) node[ground]{};
+\end{circuitikz}
+\end{center}
+\column{0.58\textwidth}
+\[
+\begin{pmatrix}
+g & -g & 1 \\
+-g & 2g & 0 \\
+1 & 0 & 0
+\end{pmatrix}
+\begin{pmatrix} v_1 \\ v_2 \\ i \end{pmatrix}
+=
+\begin{pmatrix} 0 \\ 0 \\ 10 \end{pmatrix}
+\]
+\[
+v_1 = 10, \quad v_2 = 5, \quad i = -5\,\text{mA}
+\]
+\end{columns}
+\vspace{2mm}
+\begin{itemize}
+\item the branch row has a structural zero on the diagonal: pivoting is mandatory
+\item $i < 0$: branch current flows into the positive terminal, a sourcing supply reads negative
+\end{itemize}
+\end{frame}
+
+\begin{frame}[fragile]{The ground row}
+\begin{tile}{Design decision: a dummy ground row}
+Ground is unknown 0 and the solver loops start at 1. The alternative is
+an \emph{if node is not ground} test inside every stamp, roughly two
+dozen branches across eleven devices. One guard inside \texttt{add}
+replaces all of them; $x_0 = 0$ is pinned after the solve.
+\end{tile}
+\vspace{2mm}
+\begin{rust}
+fn quad(&mut self, p: usize, n: usize, cp: usize, cn: usize, g: T) {
+    self.add(p, cp, g);
+    self.add(p, cn, T::zero() - g);
+    self.add(n, cp, T::zero() - g);
+    self.add(n, cn, g);
+}
+\end{rust}
+The conductance quad covers R and the VCCS; \texttt{branch} covers V, L,
+and E. Every stamp in the file reduces to these two shapes.
+\end{frame}
+
+\begin{frame}{Sparse LU: the data structure}
+\locbar{sparse LU and stamp helpers}{113 lines, budget 437 to 550}{437}{550}
+\vspace{2mm}
+\begin{itemize}
+\item each matrix row: a vector of (column, value) pairs, sorted by column
+\item eliminated columns are removed from active rows
+\end{itemize}
+\vspace{2mm}
+\begin{tile}{The first-entry invariant}
+Before elimination step $k$, every row stored at index $i \ge k$ contains
+only columns $\ge k$. Consequence: if such a row has an entry in column
+$k$ at all, it is the \emph{first} element of its vector. Pivot search is
+an $O(1)$ probe per candidate row, with no column-linked index structure.
+\end{tile}
+\end{frame}
+
+\begin{frame}[fragile]{Sparse LU: elimination is a merge}
+\begin{rust}
+// row a minus f times pivot row p, both sorted
+fn merge<T: Num>(a: &[(usize, T)], p: &[(usize, T)], f: T) -> Vec<(usize, T)> {
+    let (mut i, mut j) = (0, 0);
+    let mut o = Vec::with_capacity(a.len() + p.len());
+    while i < a.len() && j < p.len() { /* three-way column compare */ }
+    // fill-in falls out of the merge as the union of the column sets
+    o
+}
+\end{rust}
+\vspace{1mm}
+\begin{itemize}
+\item pivoting: largest magnitude among the candidate first entries, rows swapped whole
+\item no candidate for column $k$: matrix is singular, the failing column is named \\
+      {\footnotesize\texttt{singular matrix at node b, no conduction path?}}
+\item no Markowitz ordering: netlist order, linear cost on ladders and trees
+\item 2000-node RC ladder, OP plus AC sweep: tens of milliseconds
+\end{itemize}
+\end{frame}
+
+\begin{frame}[fragile]{One primitive for every nonlinear device}
+A static device model is a set of current branches, each controlled by
+node-pair voltages. This is the contribution operator of Verilog-A,
+$I(p,n) \mathrel{{<}{+}} f(v)$:
+\begin{rust}
+fn contrib(&mut self, p: usize, n: usize, i: T,
+           ctl: &[(usize, usize, T)], x: &[T]) {
+    let mut ieq = i;
+    for &(a, b, g) in ctl {
+        self.quad(p, n, a, b, g);
+        ieq = ieq - g * (x[a] - x[b]);
+    }
+    self.rhs(p, T::zero() - ieq);
+    self.rhs(n, ieq);
+}
+\end{rust}
+The dual \texttt{vcontrib} writes the branch row
+$v_p - v_n - \sum_k g_k (x_{a_k} - x_{b_k}) = v$ for the
+voltage-defined elements.
+\end{frame}
+
+\begin{frame}{The whole device set on two primitives}
+\begin{center}
+\begin{tabular}{lll}
+\toprule
+device & primitive & controls \\
+\midrule
+R, C, I & \texttt{contrib} & self conductance, none for I \\
+G (VCCS) & \texttt{contrib} & one control pair \\
+diode & \texttt{contrib} & one junction \\
+MOSFET, JFET & \texttt{contrib} & $g_m$ and $g_{ds}$ \\
+BJT & 3 $\times$ \texttt{contrib} & two junctions, transport source \\
+V & \texttt{vcontrib} & none \\
+L & \texttt{vcontrib} & its own branch current \\
+E (VCVS) & \texttt{vcontrib} & one control pair \\
+\bottomrule
+\end{tabular}
+\end{center}
+\vspace{2mm}
+The refactor to this form removed more lines than the primitives cost;
+the freed budget paid for the JFET and the PWL source. Hand-derived
+Jacobian stamps become verification artifacts.
+\end{frame}
+
+\begin{frame}{Diode and junction limiting}
+Newton diverges on the bare exponential: an early iterate proposing
+$5\,$V puts $e^{193}$ into the Jacobian.
+\[
+v_{crit} = V_T \ln \frac{V_T}{\sqrt{2}\, I_S}
+\quad \text{(the point of maximum curvature of } i(v)\text{)}
+\]
+Beyond $v_{crit}$, \texttt{pnjlim} replaces the proposed step by a
+logarithmic one:
+\[
+v \leftarrow v_{old} + V_T \ln\!\left(1 + \frac{v_{new} - v_{old}}{V_T}\right)
+\]
+\vspace{1mm}
+\begin{itemize}
+\item the junction advances a controlled amount per iteration, regardless of overshoot
+\item per-device memory of the last limited voltage; the BJT carries two
+\end{itemize}
+\end{frame}
+
+\begin{frame}{Limiting must deny convergence}
+\begin{tile}{Field note}
+With limiting alone, a common-emitter amplifier converged with the
+transistor off: the divider put the base at 2.1\,V, \texttt{pnjlim}
+clamped the junction seen by the stamps to 0.11\,V, no current flowed,
+the node voltages stopped changing, and the delta test declared success.
+The output was superficially plausible: the divider voltage was correct,
+but unloaded.
+\end{tile}
+\vspace{2mm}
+\begin{itemize}
+\item repair: an iteration in which a limiter changed a junction voltage cannot converge
+\item the assembly reports a \texttt{limited} flag, the Newton loop requires it false
+\item with the flag: correct bias (2.05\,V, 1.3\,mA) in a dozen iterations
+\item a convergence test on the solution vector alone cannot detect active limiting
+\end{itemize}
+\end{frame}
+
+\begin{frame}{MOSFET: the effective frame}
+Four cases (nmos/pmos, source-drain swap), one evaluation. With polarity
+$s = \pm 1$ and effective terminals chosen so $v_{DS}^e \ge 0$:
+\[
+\frac{\partial I}{\partial v_g}
+ = s \cdot g_m \cdot s = g_m
+\]
+Every derivative picks up the polarity twice, and $s^2 = 1$: the
+conductance stamps are identical for all four cases, only the right-hand
+side carries $s$.
+\vspace{2mm}
+\begin{itemize}
+\item square law with channel-length modulation, $g_m$ and $g_{ds}$ by differentiation
+\item the JFET is the same square law with $K_P = 2\beta$ and a depletion
+      threshold: it shares the MOSFET variant and parser arm
+\end{itemize}
+\end{frame}
+
+\begin{frame}[fragile]{BJT: three contributions}
+\begin{columns}[c]
+\column{0.4\textwidth}
+\begin{center}
+\begin{circuitikz}[american, scale=0.72, transform shape]
+\draw (2.6,4.4) node[circ]{} node[above]{$c$} -- (2.6,3.6);
+\draw (0,2.2) node[circ]{} node[left]{$b$} -- (0.7,2.2);
+\draw (0.7,2.2) to[D, l=$i_{BC}$] (2.6,3.6);
+\draw (0.7,2.2) to[D, l_=$i_{BE}$] (2.6,0.8);
+\draw (2.6,0.8) -- (2.6,0) node[circ]{} node[below]{$e$};
+\draw (2.6,4.4) -- (4.8,4.4) to[cI, l=$i_{CT}$] (4.8,0) -- (2.6,0);
+\end{circuitikz}
+\end{center}
+\column{0.58\textwidth}
+\[
+i_{CT} = I_S (e_f - e_r), \;\;
+i_{BE} = \tfrac{I_S}{\beta_F}(e_f - 1), \;\;
+i_{BC} = \tfrac{I_S}{\beta_R}(e_r - 1)
+\]
+\begin{rust}
+s.contrib(*b, *e, .., &[(*b, *e, gpi)], x);
+s.contrib(*b, *c, .., &[(*b, *c, gmu)], x);
+s.contrib(*c, *e, ..,
+    &[(*b, *e, gmf), (*b, *c, -gmr)], x);
+\end{rust}
+\end{columns}
+\vspace{2mm}
+\begin{itemize}
+\item KCL composes the classic $3 \times 3$ stamp; rows and columns sum to
+      zero by construction
+\item pnp through the same sign argument; an npn/pnp mirror test requires
+      exact symmetry
+\end{itemize}
+\end{frame}
+
+\begin{frame}{Junction capacitances by desugaring}
+A capacitance across a node pair is exactly the \texttt{C} device, so the
+parser desugars \texttt{cjo}, \texttt{cje}/\texttt{cjc},
+\texttt{cgs}/\texttt{cgd} into internal capacitors. No assembly, state,
+timestep, or AC code knows they exist.
+\[
+C(v) = C_{j0} \left(1 - \tfrac{v}{V_J}\right)^{-m}, \qquad
+Q(v) = \frac{C_{j0} V_J}{1 - m}
+       \left(1 - \left(1 - \tfrac{v}{V_J}\right)^{1 - m}\right)
+\]
+\begin{itemize}
+\item charge-based capacitor, linearized above $F_C V_J$; $m = 0$ is the plain linear C
+\item junctions graded ($m = 0.5$), gate oxide linear, \texttt{m=} available on the C card
+\item test: at $v = -3$\,V the capacitance is exactly $C_{j0}/2$, the AC corner doubles
+\end{itemize}
+\end{frame}
+
+\begin{frame}[fragile]{Operating point: homotopy paths as data}
+\locbar{solver: assembly, Newton, operating point}{142 lines, budget 614 to 756}{614}{756}
+\vspace{1mm}
+Both classic fallbacks are paths in the $(g_{min}, \text{source scale})$
+plane, walked with warm starts:
+\begin{rust}
+let gmin_path: Vec<(f64, f64)> =
+    (2..=12).map(|k| (10f64.powi(-k), 1.0)).collect();
+let src_path: Vec<(f64, f64)> =
+    (1..=10).map(|k| (GMIN, k as f64 / 10.0)).collect();
+for path in [gmin_path, src_path] {
+    if path.iter().all(|&(g, fac)|
+        newton(ckt, x, lim, &Mode::Dc { fac }, g, ITL_OP).is_some()) {
+        return;
+    }
+}
+\end{rust}
+\begin{itemize}
+\item gmin stepping: junction trouble; source stepping: feedback and bistable topologies
+\item a cross-coupled NMOS latch in the test suite exercises the path
+\end{itemize}
+\end{frame}
+
+\begin{frame}{Transient: companion models}
+Trapezoidal rule on $i = C\,dv/dt$: the capacitor becomes a resistor with
+a history source for one step. The inductor is the dual through the flux
+$\varphi = L i$.
+\begin{center}
+\begin{circuitikz}[american, scale=0.62, transform shape]
+\draw (0,3.4) node[circ]{} node[above]{$p$} to[C, l=$C$] (0,0) node[circ]{} node[below]{$n$};
+\node at (1.5,1.7) {$\rightarrow$};
+\draw (3.0,3.4) node[circ]{} node[above]{$p$} -- (5.4,3.4);
+\draw (3.0,3.4) to[R, l=$\tfrac{2C}{h}$] (3.0,0);
+\draw (5.4,3.4) to[I, l=$I_{eq}$] (5.4,0);
+\draw (3.0,0) node[circ]{} node[below]{$n$} -- (5.4,0);
+\end{circuitikz}
+\hspace{10mm}
+\begin{circuitikz}[american, scale=0.62, transform shape]
+\draw (0,3.4) node[circ]{} node[above]{$p$} to[L, l=$L$] (0,0) node[circ]{} node[below]{$n$};
+\node at (1.5,1.7) {$\rightarrow$};
+\draw (3.0,3.4) node[circ]{} node[above]{$p$} to[R, l=$\tfrac{2L}{h}$] (3.0,1.7) to[V, l=$V_{eq}$] (3.0,0) node[circ]{} node[below]{$n$};
+\end{circuitikz}
+\end{center}
+\begin{itemize}
+\item state per reactive device: charge or flux plus the dual rate, one update rule for both
+\item trapezoid: second order, A-stable, no numerical damping (an LC tank
+      holds its amplitude for twenty periods, a test enforces it)
+\end{itemize}
+\end{frame}
+
+\begin{frame}{Timestep control by truncation error}
+\[
+\varepsilon_{tr} = -\tfrac{h^3}{12} \dddot{x}, \qquad
+\varepsilon_{tr} \approx
+\frac{h^3/12}{\;h(h+d_1)(h+d_1+d_2)/6 + h^3/12\;}\,\bigl(x_c - x_p\bigr)
+\]
+\begin{itemize}
+\item quadratic predictor through the last three accepted points, Lagrange
+      coefficients for variable steps
+\item corrector minus predictor measures $\dddot{x}$ (Milne estimate);
+      uniform steps give the classic factor $1/13$
+\item cube-root step rule $h' = 0.9\, h\, r^{-1/3}$, clamped to $[0.3, 2] \times h$
+\item the predictor doubles as the Newton starting point
+\item nonconvergence: cut the step by 8, the SPICE2 default
+\end{itemize}
+\end{frame}
+
+\begin{frame}{Breakpoints and damped restart}
+A pulse edge inside a step is invisible: the companion history belongs to
+the pre-edge circuit. For $h/\tau = 0.1$:
+\[
+v_1 = \frac{h/2\tau}{1 + h/2\tau} \approx 0.048
+\quad\text{instead of}\quad
+1 - e^{-h/\tau} \approx 0.095
+\]
+a factor-two error no smaller $h$ fixes.
+\vspace{2mm}
+\begin{itemize}
+\item every point of every piecewise linear waveform is a breakpoint;
+      steps land on them exactly
+\item after a breakpoint: small step, cleared predictor history
+\item the two predictor-less bootstrap steps run backward Euler: first
+      order but strongly damped, absorbing the trapezoid ringing at the
+      discontinuity
+\end{itemize}
+\end{frame}
+
+\begin{frame}[fragile]{Small-signal AC}
+\[
+(G + j\omega C)\,\hat{x} = \hat{b}
+\]
+At a converged operating point the limiters pass voltages through
+unchanged, so $G$ \emph{is exactly the DC Jacobian the last Newton
+iteration assembled}. The AC path reuses \texttt{assemble}, maps to
+complex, adds $j\omega C$ and $-j\omega L$.
+\begin{rust}
+trait Num: Copy + Add<Output = Self> + Sub<Output = Self>
+         + Mul<Output = Self> + Div<Output = Self> {
+    fn zero() -> Self;
+    fn one() -> Self;
+    fn mag(self) -> f64;   // pivot magnitude: abs for f64, modulus for Cx
+}
+\end{rust}
+One generic sparse LU serves Newton and AC; no device model contains any
+AC-specific code.
+\end{frame}
+
+\begin{frame}[fragile]{It oscillates}
+\begin{columns}[T]
+\column{0.52\textwidth}
+\begin{rust}
+cmos ring oscillator
+.model n nmos kp=1e-3 vt0=1 cgs=5p cgd=2p
+.model p pmos kp=1e-3 vt0=1 cgs=5p cgd=2p
+vdd vdd 0 dc 5
+m1 b a 0 0 n
+m2 b a vdd vdd p
+m3 c b 0 0 n
+m4 c b vdd vdd p
+m5 a c 0 0 n
+m6 a c vdd vdd p
+i1 0 a pulse(0 1m 0 1n 1n 20n)
+.tran 1n 500n
+\end{rust}
+\column{0.44\textwidth}
+\begin{itemize}
+\item three inverters, gate capacitances set the stage delay
+\item current kick leaves the metastable operating point
+\item period 78\,ns, stable within 1.5\,\%
+\item a test measures the period and bounds the jitter
+\end{itemize}
+\vspace{2mm}
+Without the capacitances the transistors switch instantaneously and the
+ring has no defined frequency.
+\end{columns}
+\end{frame}
+
+\begin{frame}{Validation}
+\locbar{tests/cli.rs}{330 lines, 0 of 992: tests are free}{0}{0}
+\vspace{1mm}
+References independent of the implementation:
+\begin{itemize}
+\item analytic: RC/RL step vs. $1 - e^{-t/\tau}$, AC corner at $1/\sqrt{2}$
+      and $-45^\circ$, LC amplitude $i_0\sqrt{L/C}$, energy conservation
+\item bias points: MOSFET, JFET, BJT ($I_C = \beta_F I_B$), exact npn/pnp
+      symmetry
+\item structural: a randomized 30-stage ladder verified against a Thevenin
+      reduction computed independently in the test
+\item negative: seven malformed decks must produce named errors, never a
+      panic; the floating node error must name the node
+\item meta: the line counter itself
+\end{itemize}
+\end{frame}
+
+\begin{frame}{The cut list}
+\begin{center}
+\begin{tabular}{llr}
+\toprule
+feature & why it lost & est. lines \\
+\midrule
+\texttt{.subckt} hierarchy & lost to the transistor models & $\sim$100 \\
+Markowitz ordering & netlist order suffices at this scale & $\sim$80 \\
+Gummel-Poon BJT & Ebers-Moll covers the teaching core & $\sim$80 \\
+noise analysis & needs the adjoint system & $\sim$80 \\
+\texttt{.param} expressions & a calculator is its own project & $\sim$60 \\
+temperature sweeps & $V_T$ is a constant, by choice & $\sim$25 \\
+\bottomrule
+\end{tabular}
+\end{center}
+\vspace{2mm}
+The most consequential remaining cut is \texttt{.subckt}: real decks are
+hierarchical. It would be the first addition if the budget grew.
+\end{frame}
+
+\begin{frame}{Closing}
+\begin{center}
+{\large \textbf{992 of 1000 lines}}
+\end{center}
+\vspace{2mm}
+MNA, sparse LU with partial pivoting, two contribution primitives
+carrying all device stamps, Newton with pnjlim and data-driven homotopy
+fallbacks, trapezoidal integration with LTE control, breakpoints and
+damped restarts, charge and flux based reactive state with graded
+junction capacitances, small-signal AC, eleven device letters, four
+analyses, 23 tests.
+\vspace{4mm}
+\begin{center}
+\texttt{github.com/milanofthe/nanospice}\\[1mm]
+{\footnotesize MIT licensed; the design report with all derivations is in
+the repository.}
+\end{center}
+\end{frame}
+
+\end{document}

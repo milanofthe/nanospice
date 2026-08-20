@@ -74,7 +74,9 @@ LOC budget guard. Tests and comments do not count toward the budget.
 
     tectonic report/nanospice.tex
 
-The prebuilt PDF is committed at report/nanospice.pdf.
+The prebuilt PDF is committed at report/nanospice.pdf. Slides for a 30
+minute talk, same content and style, are in talk/ with the prebuilt PDF at
+talk/slides.pdf.
 
 ## License
 
