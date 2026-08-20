@@ -147,11 +147,23 @@ fn tran_rl() {
 }
 
 #[test]
+fn ac_depletion_cap() {
+    // graded junction at vd = -3 with vj = 1, m = 0.5: c = cjo / 2, so the
+    // rc corner sits at 1 / (2 pi r cjo/2)
+    let rows = run(
+        "dep.cir",
+        "depletion\nv1 in 0 dc -3 ac 1\nr1 in b 1k\nd1 b 0 cjo=1u\n.ac lin 1 318.3098862 318.3098862\n.end\n",
+    );
+    let (h, d) = table(&rows, "ac");
+    assert!((d[0][col(&h, "mag(v(b))")] - 0.70711).abs() < 1e-3);
+}
+
+#[test]
 fn tran_diode_cap() {
     // reverse biased diode with cjo acts as a linear capacitor: rc response
     let rows = run(
         "dcap.cir",
-        "d cap\nv1 in 0 pulse 0 1 0 1n 1n 1 2\nr1 in b 1k\nd1 0 b cjo=1u\n.tran 10u 5m\n.end\n",
+        "d cap\nv1 in 0 pulse 0 1 0 1n 1n 1 2\nr1 in b 1k\nd1 0 b cjo=1u mj=0\n.tran 10u 5m\n.end\n",
     );
     let (h, d) = table(&rows, "tran");
     let c = col(&h, "v(b)");

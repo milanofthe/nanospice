@@ -175,7 +175,7 @@ fn wave_val(dc: f64, wave: &Option<Wave>, t: f64) -> f64 {
 #[derive(Clone)]
 enum Dev {
     R { p: usize, n: usize, v: f64 },
-    C { p: usize, n: usize, v: f64, ic: f64 },
+    C { p: usize, n: usize, v: f64, ic: f64, m: f64 },
     L { p: usize, n: usize, v: f64, br: usize, ic: f64 },
     V { p: usize, n: usize, dc: f64, ac: f64, wave: Option<Wave>, br: usize },
     I { p: usize, n: usize, dc: f64, ac: f64, wave: Option<Wave> },
@@ -385,7 +385,7 @@ fn parse(src: &str) -> Circuit {
             nodes.push(s.into());
             i
         };
-        let mut caps: Vec<(usize, usize, f64)> = Vec::new();
+        let mut caps: Vec<(usize, usize, f64, f64)> = Vec::new();
         let dev = match toks[0].chars().next().unwrap() {
             'r' => Dev::R { p: nid(tok(&toks, 1)), n: nid(tok(&toks, 2)), v: numx(tok(&toks, 3)) },
             'c' => Dev::C {
@@ -393,6 +393,7 @@ fn parse(src: &str) -> Circuit {
                 n: nid(tok(&toks, 2)),
                 v: numx(tok(&toks, 3)),
                 ic: pval(&toks[4..], "ic", f64::NAN),
+                m: pval(&toks[4..], "m", 0.0),
             },
             'l' => Dev::L {
                 p: nid(tok(&toks, 1)),
@@ -412,7 +413,7 @@ fn parse(src: &str) -> Circuit {
             'd' => {
                 let ext = expand(3);
                 let (p, n) = (nid(tok(&toks, 1)), nid(tok(&toks, 2)));
-                caps.push((p, n, pval(&ext, "cjo", 0.0)));
+                caps.push((p, n, pval(&ext, "cjo", 0.0), pval(&ext, "mj", 0.5)));
                 Dev::D { p, n, is: pval(&ext, "is", 1e-14), nf: pval(&ext, "n", 1.0) }
             }
             // the jfet is the square law device again: kp = 2 beta and a
@@ -420,8 +421,8 @@ fn parse(src: &str) -> Circuit {
             c @ ('m' | 'j') => {
                 let ext = expand(if c == 'm' { 5 } else { 4 });
                 let (nd, ng, ns) = (nid(tok(&toks, 1)), nid(tok(&toks, 2)), nid(tok(&toks, 3)));
-                caps.push((ng, ns, pval(&ext, "cgs", 0.0)));
-                caps.push((ng, nd, pval(&ext, "cgd", 0.0)));
+                caps.push((ng, ns, pval(&ext, "cgs", 0.0), 0.0));
+                caps.push((ng, nd, pval(&ext, "cgd", 0.0), 0.0));
                 Dev::M {
                     d: nd,
                     g: ng,
@@ -450,8 +451,10 @@ fn parse(src: &str) -> Circuit {
             'q' => {
                 let ext = expand(4);
                 let (nc, nb, ne) = (nid(tok(&toks, 1)), nid(tok(&toks, 2)), nid(tok(&toks, 3)));
-                caps.push((nb, ne, pval(&ext, "cje", 0.0)));
-                caps.push((nb, nc, pval(&ext, "cjc", 0.0)));
+                let pnp = ext.iter().any(|t| *t == "pnp");
+                let (je, jc) = if pnp { ((ne, nb), (nc, nb)) } else { ((nb, ne), (nb, nc)) };
+                caps.push((je.0, je.1, pval(&ext, "cje", 0.0), pval(&ext, "mj", 0.5)));
+                caps.push((jc.0, jc.1, pval(&ext, "cjc", 0.0), pval(&ext, "mj", 0.5)));
                 Dev::Q {
                     c: nc,
                     b: nb,
@@ -459,7 +462,7 @@ fn parse(src: &str) -> Circuit {
                     is: pval(&ext, "is", 1e-16),
                     bf: pval(&ext, "bf", 100.0),
                     br: pval(&ext, "br", 1.0),
-                    pnp: ext.iter().any(|t| *t == "pnp"),
+                    pnp,
                 }
             }
             _ => die(&format!("unknown device '{}'", toks[0])),
@@ -467,9 +470,9 @@ fn parse(src: &str) -> Circuit {
         devs.push(dev);
         names.push(toks[0].to_string());
         // junction and gate capacitances desugar into plain capacitors
-        for (a, b, cv) in caps {
+        for (a, b, cv, mg) in caps {
             if cv > 0.0 {
-                devs.push(Dev::C { p: a, n: b, v: cv, ic: f64::NAN });
+                devs.push(Dev::C { p: a, n: b, v: cv, ic: f64::NAN, m: mg });
                 names.push(format!("c.{}", toks[0]));
             }
         }
@@ -618,6 +621,24 @@ fn solve<T: Num>(mut s: Sys<T>) -> Result<Vec<T>, usize> {
 
 // ---------------------------------------------------------- device models ---
 
+// Charge and capacitance of the graded junction: q(v) integrates
+// c(v) = c0 (1 - v/vj)^-m below fc*vj, linearized above; m = 0 is the
+// plain linear capacitor. vj = 1 V and fc = 0.5 are fixed.
+fn ceval(v: f64, c0: f64, m: f64) -> (f64, f64) {
+    let (vj, fc) = (1.0, 0.5);
+    if m == 0.0 {
+        return (c0 * v, c0);
+    }
+    let qj = |v: f64| c0 * vj / (1.0 - m) * (1.0 - (1.0 - v / vj).powf(1.0 - m));
+    if v < fc * vj {
+        (qj(v), c0 * (1.0 - v / vj).powf(-m))
+    } else {
+        let (cf, dv) = (c0 * (1.0 - fc).powf(-m), v - fc * vj);
+        let slope = cf * m / (vj * (1.0 - fc));
+        (qj(fc * vj) + cf * dv + 0.5 * slope * dv * dv, cf + slope * dv)
+    }
+}
+
 fn diode_eval(vd: f64, is: f64, vt: f64, gmin: f64) -> (f64, f64) {
     let e = (vd / vt).min(200.0).exp();
     (is * (e - 1.0) + gmin * vd, is * e / vt + gmin)
@@ -692,11 +713,12 @@ fn assemble(ckt: &Circuit, x: &[f64], lim: &mut [[f64; 2]], mode: &Mode, gmin: f
     for (di, dv) in ckt.devs.iter().enumerate() {
         match dv {
             Dev::R { p, n, v } => s.contrib(*p, *n, (x[*p] - x[*n]) / v, &[(*p, *n, 1.0 / v)], x),
-            Dev::C { p, n, v, .. } => {
+            Dev::C { p, n, v, m: mg, .. } => {
                 if let Mode::Tran { h, st, be, .. } = mode {
-                    let geq = if *be { v / h } else { 2.0 * v / h };
-                    let hist = geq * st[di][0] + if *be { 0.0 } else { st[di][1] };
-                    s.contrib(*p, *n, geq * (x[*p] - x[*n]) - hist, &[(*p, *n, geq)], x);
+                    let k = if *be { 1.0 } else { 2.0 };
+                    let (q, c) = ceval(x[*p] - x[*n], *v, *mg);
+                    let inow = k / h * (q - st[di][0]) - if *be { 0.0 } else { st[di][1] };
+                    s.contrib(*p, *n, inow, &[(*p, *n, k * c / h)], x);
                 }
             }
             Dev::L { p, n, v, br, .. } => match mode {
@@ -819,7 +841,7 @@ fn init_state(ckt: &Circuit, x: &[f64], uic: bool) -> Vec<[f64; 2]> {
     ckt.devs
         .iter()
         .map(|d| match d {
-            Dev::C { p, n, ic, .. } => [pick(*ic, x[*p] - x[*n]), 0.0],
+            Dev::C { p, n, v, ic, m: mg } => [ceval(pick(*ic, x[*p] - x[*n]), *v, *mg).0, 0.0],
             Dev::L { br, ic, .. } => [pick(*ic, x[*br]), 0.0],
             _ => [0.0, 0.0],
         })
@@ -830,9 +852,9 @@ fn update_state(ckt: &Circuit, x: &[f64], h: f64, st: &mut [[f64; 2]], be: bool)
     let (f, m) = if be { (1.0, 0.0) } else { (2.0, 1.0) };
     for (k, d) in ckt.devs.iter().enumerate() {
         match d {
-            Dev::C { p, n, v, .. } => {
-                let vn = x[*p] - x[*n];
-                st[k] = [vn, f * v / h * (vn - st[k][0]) - m * st[k][1]];
+            Dev::C { p, n, v, m: mg, .. } => {
+                let q = ceval(x[*p] - x[*n], *v, *mg).0;
+                st[k] = [q, f / h * (q - st[k][0]) - m * st[k][1]];
             }
             Dev::L { v, br, .. } => {
                 let inw = x[*br];
@@ -1063,7 +1085,9 @@ fn run_ac(ckt: &Circuit, dec: bool, n: usize, f1: f64, f2: f64) {
         };
         for dv in &ckt.devs {
             match dv {
-                Dev::C { p, n, v, .. } => sc.quad(*p, *n, *p, *n, Cx::new(0.0, w * v)),
+                Dev::C { p, n, v, m: mg, .. } => {
+                    sc.quad(*p, *n, *p, *n, Cx::new(0.0, w * ceval(x[*p] - x[*n], *v, *mg).1))
+                }
                 Dev::L { v, br, .. } => sc.add(*br, *br, Cx::new(0.0, -w * v)),
                 Dev::V { ac, br, .. } => sc.rhs(*br, Cx::new(*ac, 0.0)),
                 Dev::I { p, n, ac, .. } => {
