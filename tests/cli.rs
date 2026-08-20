@@ -147,6 +147,23 @@ fn tran_rl() {
 }
 
 #[test]
+fn tran_pwl() {
+    // triangle from a pwl source: the source node must track the exact
+    // interpolation at every output time
+    let rows = run(
+        "pwl.cir",
+        "pwl\nv1 in 0 pwl(0 0 1m 1 2m 0)\nr1 in 0 1k\n.tran 50u 2m\n.end\n",
+    );
+    let (h, d) = table(&rows, "tran");
+    let c = col(&h, "v(in)");
+    for r in &d {
+        let t = r[0];
+        let refv = if t <= 1e-3 { t / 1e-3 } else { (2e-3 - t) / 1e-3 };
+        assert!((r[c] - refv).abs() < 1e-9, "t={} v={} ref={}", t, r[c], refv);
+    }
+}
+
+#[test]
 fn tran_lte_fast_tau() {
     // tau = 10u is ten times smaller than tstep, so a fixed tstep integration
     // would ring badly; the LTE controller has to resolve the edge on its own

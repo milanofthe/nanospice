@@ -140,7 +140,7 @@ fn numx(tok: &str) -> f64 {
 #[derive(Clone)]
 enum Wave {
     Sin { vo: f64, va: f64, fr: f64, td: f64, theta: f64 },
-    Pulse { v1: f64, v2: f64, td: f64, tr: f64, tf: f64, pw: f64, per: f64 },
+    Pwl { pts: Vec<(f64, f64)>, per: f64 },
 }
 
 fn wave_val(dc: f64, wave: &Option<Wave>, t: f64) -> f64 {
@@ -154,22 +154,24 @@ fn wave_val(dc: f64, wave: &Option<Wave>, t: f64) -> f64 {
                 vo + va * (-tp * theta).exp() * (2.0 * PI * fr * tp).sin()
             }
         }
-        Some(Wave::Pulse { v1, v2, td, tr, tf, pw, per }) => {
-            let mut tp = t - td;
-            if *per > 0.0 && tp > 0.0 {
-                tp %= per;
+        Some(Wave::Pwl { pts, per }) => {
+            let t0 = pts[0].0;
+            let mut tt = t;
+            if *per > 0.0 && tt > t0 {
+                tt = t0 + (tt - t0) % per;
             }
-            if tp <= 0.0 {
-                *v1
-            } else if tp < *tr {
-                v1 + (v2 - v1) * tp / tr
-            } else if tp < tr + pw {
-                *v2
-            } else if tp < tr + pw + tf {
-                v2 + (v1 - v2) * (tp - tr - pw) / tf
-            } else {
-                *v1
+            let mut v = pts[0].1;
+            for w in pts.windows(2) {
+                if tt >= w[1].0 {
+                    v = w[1].1;
+                } else {
+                    if tt > w[0].0 {
+                        v = w[0].1 + (w[1].1 - w[0].1) * (tt - w[0].0) / (w[1].0 - w[0].0);
+                    }
+                    break;
+                }
             }
+            v
         }
     }
 }
@@ -259,16 +261,20 @@ fn src_spec(toks: &[&str]) -> (f64, f64, Option<Wave>) {
                 i += 1;
                 let v = take(&mut i);
                 let g = |k: usize| v.get(k).copied().unwrap_or(0.0);
+                let (v1, v2, td) = (g(0), g(1), g(2));
+                let (tr, tf) = (g(3).max(1e-12), g(4).max(1e-12));
                 let pw = if v.len() > 5 { g(5) } else { f64::MAX / 4.0 };
-                wave = Some(Wave::Pulse {
-                    v1: g(0),
-                    v2: g(1),
-                    td: g(2),
-                    tr: g(3).max(1e-12),
-                    tf: g(4).max(1e-12),
-                    pw,
-                    per: g(6),
-                });
+                let pts = vec![(td, v1), (td + tr, v2), (td + tr + pw, v2), (td + tr + pw + tf, v1)];
+                wave = Some(Wave::Pwl { pts, per: g(6) });
+            }
+            "pwl" => {
+                i += 1;
+                let v = take(&mut i);
+                let pts: Vec<(f64, f64)> = v.chunks(2).filter(|c| c.len() == 2).map(|c| (c[0], c[1])).collect();
+                if pts.is_empty() {
+                    die("pwl needs time/value pairs");
+                }
+                wave = Some(Wave::Pwl { pts, per: 0.0 });
             }
             t => {
                 if let Some(x) = num(t) {
@@ -531,6 +537,16 @@ impl<T: Num> Sys<T> {
         self.rhs(p, T::zero() - ieq);
         self.rhs(n, ieq);
     }
+    // The dual voltage contribution for V, L, E: branch row
+    // v(p) - v(n) - sum g (x[a] - x[b]) = v.
+    fn vcontrib(&mut self, p: usize, n: usize, br: usize, v: T, ctl: &[(usize, usize, T)]) {
+        self.branch(p, n, br);
+        for &(a, b, g) in ctl {
+            self.add(br, a, T::zero() - g);
+            self.add(br, b, g);
+        }
+        self.rhs(br, v);
+    }
 }
 
 // row a minus f times pivot row p, both sorted; fill-in falls out of the merge
@@ -672,32 +688,26 @@ fn assemble(ckt: &Circuit, x: &[f64], lim: &mut [[f64; 2]], mode: &Mode, gmin: f
     let fac = if let Mode::Dc { fac } = mode { *fac } else { 1.0 };
     for (di, dv) in ckt.devs.iter().enumerate() {
         match dv {
-            Dev::R { p, n, v } => s.quad(*p, *n, *p, *n, 1.0 / v),
+            Dev::R { p, n, v } => s.contrib(*p, *n, (x[*p] - x[*n]) / v, &[(*p, *n, 1.0 / v)], x),
             Dev::C { p, n, v, .. } => {
                 if let Mode::Tran { h, st, .. } = mode {
                     let geq = 2.0 * v / h;
-                    let ieq = geq * st[di][0] + st[di][1];
-                    s.quad(*p, *n, *p, *n, geq);
-                    s.rhs(*p, ieq);
-                    s.rhs(*n, -ieq);
+                    let hist = geq * st[di][0] + st[di][1];
+                    s.contrib(*p, *n, geq * (x[*p] - x[*n]) - hist, &[(*p, *n, geq)], x);
                 }
             }
-            Dev::L { p, n, v, br, .. } => {
-                s.branch(*p, *n, *br);
-                if let Mode::Tran { h, st, .. } = mode {
+            Dev::L { p, n, v, br, .. } => match mode {
+                Mode::Tran { h, st, .. } => {
                     let req = 2.0 * v / h;
-                    s.add(*br, *br, -req);
-                    s.rhs(*br, -(req * st[di][0] + st[di][1]));
+                    s.vcontrib(*p, *n, *br, -(req * st[di][0] + st[di][1]), &[(*br, 0, req)]);
                 }
-            }
+                _ => s.vcontrib(*p, *n, *br, 0.0, &[]),
+            },
             Dev::V { p, n, dc, wave, br, .. } => {
-                s.branch(*p, *n, *br);
-                s.rhs(*br, fac * wave_val(*dc, wave, t_now));
+                s.vcontrib(*p, *n, *br, fac * wave_val(*dc, wave, t_now), &[]);
             }
             Dev::I { p, n, dc, wave, .. } => {
-                let val = fac * wave_val(*dc, wave, t_now);
-                s.rhs(*p, -val);
-                s.rhs(*n, val);
+                s.contrib(*p, *n, fac * wave_val(*dc, wave, t_now), &[], x);
             }
             Dev::D { p, n, is, nf } => {
                 let vt = nf * VT;
@@ -710,12 +720,8 @@ fn assemble(ckt: &Circuit, x: &[f64], lim: &mut [[f64; 2]], mode: &Mode, gmin: f
                 let (ed, es, i0, gm, gds) = mos_op(dv, x);
                 s.contrib(ed, es, i0, &[(*g, es, gm), (ed, es, gds + gmin)], x);
             }
-            Dev::E { p, n, cp, cn, k, br } => {
-                s.branch(*p, *n, *br);
-                s.add(*br, *cp, -*k);
-                s.add(*br, *cn, *k);
-            }
-            Dev::G { p, n, cp, cn, k } => s.quad(*p, *n, *cp, *cn, *k),
+            Dev::E { p, n, cp, cn, k, br } => s.vcontrib(*p, *n, *br, 0.0, &[(*cp, *cn, *k)]),
+            Dev::G { p, n, cp, cn, k } => s.contrib(*p, *n, *k * (x[*cp] - x[*cn]), &[(*cp, *cn, *k)], x),
             // Ebers-Moll transport form as three contributions: the two
             // junctions and the transport source, KCL composes the stamp.
             Dev::Q { c, b, e, is, bf, br, pnp } => {
@@ -775,31 +781,21 @@ fn newton(ckt: &Circuit, x: &mut Vec<f64>, lim: &mut [[f64; 2]], mode: &Mode, gm
 }
 
 fn op_solve(ckt: &Circuit, x: &mut Vec<f64>, lim: &mut [[f64; 2]]) {
-    let dc = Mode::Dc { fac: 1.0 };
-    if newton(ckt, x, lim, &dc, GMIN, ITL_OP).is_some() {
+    if newton(ckt, x, lim, &Mode::Dc { fac: 1.0 }, GMIN, ITL_OP).is_some() {
         return;
     }
-    let reset = |x: &mut Vec<f64>, lim: &mut [[f64; 2]]| {
+    // continuation fallbacks: each path is a list of (gmin, source scale)
+    // stages walked with warm starts; gmin stepping, then source stepping
+    let gmin_path: Vec<(f64, f64)> = (2..=12).map(|k| (10f64.powi(-k), 1.0)).collect();
+    let src_path: Vec<(f64, f64)> = (1..=10).map(|k| (GMIN, k as f64 / 10.0)).collect();
+    for path in [gmin_path, src_path] {
         x.iter_mut().for_each(|v| *v = 0.0);
         lim.iter_mut().for_each(|v| *v = [0.0; 2]);
-    };
-    // first fallback: gmin stepping
-    reset(x, lim);
-    let (mut g, mut ok) = (1e-2, true);
-    while ok && g > GMIN {
-        ok = newton(ckt, x, lim, &dc, g, ITL_OP).is_some();
-        g /= 10.0;
-    }
-    if ok && newton(ckt, x, lim, &dc, GMIN, ITL_OP).is_some() {
-        return;
-    }
-    // second fallback: source stepping, ramp all sources up with warm starts
-    reset(x, lim);
-    for k in 1..=10 {
-        if newton(ckt, x, lim, &Mode::Dc { fac: k as f64 / 10.0 }, GMIN, ITL_OP).is_none() {
-            die("operating point did not converge (gmin and source stepping failed)");
+        if path.iter().all(|&(g, fac)| newton(ckt, x, lim, &Mode::Dc { fac }, g, ITL_OP).is_some()) {
+            return;
         }
     }
+    die("operating point did not converge (gmin and source stepping failed)");
 }
 
 fn op_setup(ckt: &Circuit) -> (usize, Vec<f64>, Vec<[f64; 2]>) {
@@ -920,16 +916,17 @@ fn run_dc(ckt: &mut Circuit, src: &str, start: f64, stop: f64, step: f64) {
     out!("");
 }
 
-// Pulse corner breakpoints: transient steps must land on them, classic style.
+// Waveform corner breakpoints: transient steps must land on them.
 fn breakpoints(ckt: &Circuit, tstop: f64) -> Vec<f64> {
     let mut bp = Vec::new();
     for d in &ckt.devs {
-        if let Dev::V { wave: Some(Wave::Pulse { td, tr, tf, pw, per, .. }), .. }
-        | Dev::I { wave: Some(Wave::Pulse { td, tr, tf, pw, per, .. }), .. } = d
+        if let Dev::V { wave: Some(Wave::Pwl { pts, per }), .. }
+        | Dev::I { wave: Some(Wave::Pwl { pts, per }), .. } = d
         {
-            let mut t0 = *td;
-            while t0 < tstop {
-                for c in [t0, t0 + tr, t0 + tr + pw, t0 + tr + pw + tf] {
+            let mut off = 0.0;
+            while pts[0].0 + off < tstop {
+                for &(tc, _) in pts {
+                    let c = tc + off;
                     if c > 0.0 && c < tstop {
                         bp.push(c);
                     }
@@ -937,7 +934,7 @@ fn breakpoints(ckt: &Circuit, tstop: f64) -> Vec<f64> {
                 if *per <= 0.0 {
                     break;
                 }
-                t0 += per;
+                off += per;
             }
         }
     }
