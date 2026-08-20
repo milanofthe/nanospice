@@ -61,6 +61,22 @@ fn op_mos() {
 }
 
 #[test]
+fn op_model_card() {
+    // n=2 diode via .model card: drop is twice the n=1 drop, so this fails
+    // if the model reference is not resolved
+    let rows = run(
+        "model.cir",
+        "model card\n.model dx d is=1e-15 n=2\nv1 a 0 dc 5\nr1 a b 1k\nd1 b 0 dx\n.op\n.end\n",
+    );
+    let (h, d) = table(&rows, "op");
+    let vb = d[0][col(&h, "v(b)")];
+    assert!(vb > 1.3 && vb < 1.7, "vd = {}", vb);
+    let ir = (5.0 - vb) / 1e3;
+    let id = 1e-15 * ((vb / (2.0 * 0.02585)).exp() - 1.0);
+    assert!((ir - id).abs() / ir < 5e-2, "kcl mismatch: {} vs {}", ir, id);
+}
+
+#[test]
 fn op_bjt() {
     // forward active npn: base current set by rb, check ic = bf * ib
     let npn = run(

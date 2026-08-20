@@ -303,7 +303,13 @@ fn src_spec(toks: &[&str]) -> (f64, f64, Option<Wave>) {
 fn parse(src: &str) -> Circuit {
     let mut lines: Vec<String> = Vec::new();
     for (ln, raw) in src.lines().enumerate() {
-        let line = raw.split(';').next().unwrap().trim().to_ascii_lowercase();
+        let low = raw.split(';').next().unwrap().to_ascii_lowercase();
+        let line = low
+            .chars()
+            .map(|c| if "(),".contains(c) { ' ' } else { c })
+            .collect::<String>()
+            .trim()
+            .to_string();
         if ln == 0 || line.is_empty() || line.starts_with('*') {
             continue;
         }
@@ -319,6 +325,13 @@ fn parse(src: &str) -> Circuit {
             lines.push(line);
         }
     }
+    let mut models: HashMap<String, Vec<String>> = HashMap::new();
+    for line in &lines {
+        let toks: Vec<&str> = line.split_whitespace().collect();
+        if toks.first() == Some(&".model") && toks.len() > 2 {
+            models.insert(toks[1].into(), toks[2..].iter().map(|s| s.to_string()).collect());
+        }
+    }
     let mut map: HashMap<String, usize> = HashMap::new();
     map.insert("0".into(), 0);
     map.insert("gnd".into(), 0);
@@ -327,8 +340,7 @@ fn parse(src: &str) -> Circuit {
     let mut names: Vec<String> = Vec::new();
     let mut analyses: Vec<Analysis> = Vec::new();
     for line in &lines {
-        let clean: String = line.chars().map(|c| if "(),".contains(c) { ' ' } else { c }).collect();
-        let toks: Vec<&str> = clean.split_whitespace().collect();
+        let toks: Vec<&str> = line.split_whitespace().collect();
         if toks.is_empty() {
             continue;
         }
@@ -360,10 +372,22 @@ fn parse(src: &str) -> Circuit {
                         f2: numx(tok(&toks, 4)),
                     });
                 }
+                "model" => {}
                 _ => eprintln!("nanospice: ignoring card .{}", card),
             }
             continue;
         }
+        let expand = |from: usize| -> Vec<&str> {
+            let (mut inline, mut modt) = (Vec::new(), Vec::new());
+            for t in toks.iter().skip(from) {
+                match models.get(*t) {
+                    Some(mt) => modt.extend(mt.iter().map(|s| s.as_str())),
+                    None => inline.push(*t),
+                }
+            }
+            inline.extend(modt);
+            inline
+        };
         let mut nid = |s: &str| -> usize {
             if let Some(&i) = map.get(s) {
                 return i;
@@ -385,21 +409,27 @@ fn parse(src: &str) -> Circuit {
                 let (dc, ac, wave) = src_spec(&toks[3..]);
                 Dev::I { p: nid(tok(&toks, 1)), n: nid(tok(&toks, 2)), dc, ac, wave }
             }
-            'd' => Dev::D {
-                p: nid(tok(&toks, 1)),
-                n: nid(tok(&toks, 2)),
-                is: pval(&toks[3..], "is", 1e-14),
-                nf: pval(&toks[3..], "n", 1.0),
-            },
-            'm' => Dev::M {
-                d: nid(tok(&toks, 1)),
-                g: nid(tok(&toks, 2)),
-                s: nid(tok(&toks, 3)),
-                kp: pval(&toks[4..], "kp", 2e-5),
-                vt0: pval(&toks[4..], "vt0", pval(&toks[4..], "vto", 0.0)),
-                lambda: pval(&toks[4..], "lambda", 0.0),
-                pmos: toks.get(5).map_or(false, |t| *t == "pmos"),
-            },
+            'd' => {
+                let ext = expand(3);
+                Dev::D {
+                    p: nid(tok(&toks, 1)),
+                    n: nid(tok(&toks, 2)),
+                    is: pval(&ext, "is", 1e-14),
+                    nf: pval(&ext, "n", 1.0),
+                }
+            }
+            'm' => {
+                let ext = expand(5);
+                Dev::M {
+                    d: nid(tok(&toks, 1)),
+                    g: nid(tok(&toks, 2)),
+                    s: nid(tok(&toks, 3)),
+                    kp: pval(&ext, "kp", 2e-5),
+                    vt0: pval(&ext, "vt0", pval(&ext, "vto", 0.0)),
+                    lambda: pval(&ext, "lambda", 0.0),
+                    pmos: ext.iter().any(|t| *t == "pmos"),
+                }
+            }
             'e' => Dev::E {
                 p: nid(tok(&toks, 1)),
                 n: nid(tok(&toks, 2)),
@@ -415,15 +445,18 @@ fn parse(src: &str) -> Circuit {
                 cn: nid(tok(&toks, 4)),
                 k: numx(tok(&toks, 5)),
             },
-            'q' => Dev::Q {
-                c: nid(tok(&toks, 1)),
-                b: nid(tok(&toks, 2)),
-                e: nid(tok(&toks, 3)),
-                is: pval(&toks[4..], "is", 1e-16),
-                bf: pval(&toks[4..], "bf", 100.0),
-                br: pval(&toks[4..], "br", 1.0),
-                pnp: toks.get(4).map_or(false, |t| *t == "pnp"),
-            },
+            'q' => {
+                let ext = expand(4);
+                Dev::Q {
+                    c: nid(tok(&toks, 1)),
+                    b: nid(tok(&toks, 2)),
+                    e: nid(tok(&toks, 3)),
+                    is: pval(&ext, "is", 1e-16),
+                    bf: pval(&ext, "bf", 100.0),
+                    br: pval(&ext, "br", 1.0),
+                    pnp: ext.iter().any(|t| *t == "pnp"),
+                }
+            }
             _ => die(&format!("unknown device '{}'", toks[0])),
         };
         devs.push(dev);
