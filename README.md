@@ -15,16 +15,21 @@ Output is CSV on stdout, one block per analysis, each prefixed with a
 
 ## Supported
 
-Analyses: `.op`, `.dc src start stop step`, `.tran tstep tstop`,
-`.ac dec|lin n fstart fstop`.
+Analyses: `.op`, `.dc src start stop step`, `.tran tstep tstop [uic]`,
+`.ac dec|lin n fstart fstop`. With `uic` the operating point is skipped and
+`ic=` values on C and L are used as the initial state (the t=0 output row is
+the zero vector then). `.model name type params` cards are supported for D, M
+and Q; inline parameters override the model. `.print v(out) i(v1) ...`
+restricts the output columns, default is everything. Branch current i(vx) is
+measured into the positive terminal, so a sourcing supply reads negative.
 
 Devices:
 
 | Card | Device |
 |---|---|
 | `Rxxx p n value` | resistor |
-| `Cxxx p n value` | capacitor |
-| `Lxxx p n value` | inductor |
+| `Cxxx p n value [ic=v]` | capacitor |
+| `Lxxx p n value [ic=i]` | inductor |
 | `Vxxx p n [dc v] [ac mag] [sin(vo va f td theta)] [pulse(v1 v2 td tr tf pw per)]` | voltage source |
 | `Ixxx p n ...` | current source, same spec as V |
 | `Dxxx p n [is=1e-14] [n=1]` | diode, Shockley |
@@ -62,8 +67,8 @@ in tens of milliseconds.
 
 ## Not supported
 
-Subcircuits, `.model` cards, `.param`, junction capacitances, noise analysis.
-That is the price of the budget.
+Subcircuits, `.param`, junction capacitances, noise analysis. That is the
+price of the budget.
 
 ## Examples and tests
 

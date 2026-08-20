@@ -195,6 +195,18 @@ fn ac_rc() {
 }
 
 #[test]
+fn print_selection() {
+    let rows = run(
+        "print.cir",
+        "print\nv1 in 0 dc 10\nr1 in out 1k\nr2 out 0 1k\n.print v(out) i(v1)\n.op\n.end\n",
+    );
+    let (h, d) = table(&rows, "op");
+    assert_eq!(h, vec!["v(out)", "i(v1)"]);
+    assert!((d[0][0] - 5.0).abs() < 1e-9);
+    assert!((d[0][1] + 5e-3).abs() < 1e-9);
+}
+
+#[test]
 fn loc_budget() {
     let src = std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/src/main.rs")).unwrap();
     let n = src

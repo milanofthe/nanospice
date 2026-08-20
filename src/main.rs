@@ -221,6 +221,7 @@ struct Circuit {
     names: Vec<String>,
     nodes: Vec<String>,
     analyses: Vec<Analysis>,
+    prints: Vec<String>,
     nb: usize,
 }
 
@@ -339,6 +340,7 @@ fn parse(src: &str) -> Circuit {
     let mut devs: Vec<Dev> = Vec::new();
     let mut names: Vec<String> = Vec::new();
     let mut analyses: Vec<Analysis> = Vec::new();
+    let mut prints: Vec<String> = Vec::new();
     for line in &lines {
         let toks: Vec<&str> = line.split_whitespace().collect();
         if toks.is_empty() {
@@ -374,6 +376,13 @@ fn parse(src: &str) -> Circuit {
                     });
                 }
                 "model" => {}
+                "print" => {
+                    let mut i = 1;
+                    while i + 1 < toks.len() {
+                        prints.push(format!("{}({})", toks[i], toks[i + 1]));
+                        i += 2;
+                    }
+                }
                 _ => eprintln!("nanospice: ignoring card .{}", card),
             }
             continue;
@@ -482,7 +491,7 @@ fn parse(src: &str) -> Circuit {
             nb += 1;
         }
     }
-    Circuit { devs, names, nodes, analyses, nb }
+    Circuit { devs, names, nodes, analyses, prints, nb }
 }
 
 // -------------------------------------------------------------- sparse LU ---
@@ -839,6 +848,28 @@ fn columns(ckt: &Circuit) -> Vec<String> {
     c
 }
 
+// Printed columns and their unknown indices; empty .print means everything.
+fn selection(ckt: &Circuit) -> (Vec<String>, Vec<usize>) {
+    let all = columns(ckt);
+    for p in &ckt.prints {
+        if !all.contains(p) {
+            eprintln!("nanospice: unknown .print item {}", p);
+        }
+    }
+    let (mut names, mut idx) = (Vec::new(), Vec::new());
+    for (i, c) in all.into_iter().enumerate() {
+        if ckt.prints.is_empty() || ckt.prints.contains(&c) {
+            names.push(c);
+            idx.push(i + 1);
+        }
+    }
+    (names, idx)
+}
+
+fn pick(x: &[f64], idx: &[usize]) -> Vec<f64> {
+    idx.iter().map(|&i| x[i]).collect()
+}
+
 fn fmt_row(vals: &[f64]) -> String {
     vals.iter().map(|v| format!("{:.9e}", v)).collect::<Vec<_>>().join(",")
 }
@@ -847,9 +878,10 @@ fn fmt_row(vals: &[f64]) -> String {
 
 fn run_op(ckt: &Circuit) {
     let (_, x, _) = op_setup(ckt);
+    let (names, idx) = selection(ckt);
     out!("# op");
-    out!("{}", columns(ckt).join(","));
-    out!("{}", fmt_row(&x[1..]));
+    out!("{}", names.join(","));
+    out!("{}", fmt_row(&pick(&x, &idx)));
     out!("");
 }
 
@@ -865,8 +897,9 @@ fn run_dc(ckt: &mut Circuit, src: &str, start: f64, stop: f64, step: f64) {
     let m = ckt.nodes.len() + ckt.nb;
     let mut x = vec![0.0; m];
     let mut lim = vec![[0.0; 2]; ckt.devs.len()];
+    let (names, idx) = selection(ckt);
     out!("# dc");
-    out!("{},{}", src, columns(ckt).join(","));
+    out!("{},{}", src, names.join(","));
     let npts = ((stop - start) / step).round() as i64;
     for k in 0..=npts.max(0) {
         let val = start + step * k as f64;
@@ -879,7 +912,7 @@ fn run_dc(ckt: &mut Circuit, src: &str, start: f64, stop: f64, step: f64) {
             _ => die(".dc sweep source must be a v or i source"),
         }
         op_solve(ckt, &mut x, &mut lim);
-        out!("{:.9e},{}", val, fmt_row(&x[1..]));
+        out!("{:.9e},{}", val, fmt_row(&pick(&x, &idx)));
     }
     out!("");
 }
@@ -921,9 +954,10 @@ fn run_tran(ckt: &Circuit, tstep: f64, tstop: f64, uic: bool) {
     }
     let nn = ckt.nodes.len();
     let mut st = init_state(ckt, &x, uic);
+    let (names, idx) = selection(ckt);
     out!("# tran");
-    out!("time,{}", columns(ckt).join(","));
-    out!("{:.9e},{}", 0.0, fmt_row(&x[1..]));
+    out!("time,{}", names.join(","));
+    out!("{:.9e},{}", 0.0, fmt_row(&pick(&x, &idx)));
     let hmin = tstop * 1e-12;
     // start small like classic SPICE; the LTE controller grows the step fast
     let (mut t, mut h) = (0.0, tstep / 100.0);
@@ -982,7 +1016,7 @@ fn run_tran(ckt: &Circuit, tstep: f64, tstop: f64, uic: bool) {
         old.insert(0, (x, hs));
         old.truncate(2);
         x = xn;
-        out!("{:.9e},{}", t, fmt_row(&x[1..]));
+        out!("{:.9e},{}", t, fmt_row(&pick(&x, &idx)));
         if on_bp {
             // waveform derivative is discontinuous here: restart small and
             // drop the predictor history
@@ -1020,8 +1054,9 @@ fn run_ac(ckt: &Circuit, dec: bool, n: usize, f1: f64, f2: f64) {
             freqs.push(f1 + (f2 - f1) * k as f64 / (n as f64 - 1.0));
         }
     }
+    let (names, idx) = selection(ckt);
     out!("# ac");
-    let hdr: Vec<String> = columns(ckt)
+    let hdr: Vec<String> = names
         .iter()
         .flat_map(|c| [format!("mag({})", c), format!("ph({})", c)])
         .collect();
@@ -1046,9 +1081,9 @@ fn run_ac(ckt: &Circuit, dec: bool, n: usize, f1: f64, f2: f64) {
         }
         let xa = solve(sc).unwrap_or_else(|| die("singular matrix in .ac"));
         let mut row = vec![f];
-        for v in &xa[1..] {
-            row.push(v.mag());
-            row.push(v.im.atan2(v.re) * 180.0 / PI);
+        for &i in &idx {
+            row.push(xa[i].mag());
+            row.push(xa[i].im.atan2(xa[i].re) * 180.0 / PI);
         }
         out!("{}", fmt_row(&row));
     }
