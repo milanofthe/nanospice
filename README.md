@@ -1,29 +1,25 @@
 # nanospice
 
-A classic SPICE circuit simulator in a single Rust source file with a hard
-budget of 1000 lines of code. No dependencies, std only. The budget is
-enforced by a test (`loc_budget` in `tests/cli.rs`), counting nonblank,
-noncomment lines of `src/main.rs`.
+A classic SPICE circuit simulator in one Rust source file, capped at 1000
+lines of code. No dependencies, std only. A test counts the nonblank,
+noncomment lines of src/main.rs and fails above 1000. Current count: 999.
+
+The repository is educational. The report in report/ derives every algorithm
+in the simulator, explains the design decisions, and maps both to the code
+section by section.
 
 ## Build and run
 
     cargo build --release
     target/release/nanospice circuit.cir
 
-Output is CSV on stdout, one block per analysis, each prefixed with a
-`# <analysis>` comment line.
+Output is CSV on stdout, one block per analysis. Example netlists are in
+circuits/.
 
-## Supported
+## Scope
 
-Analyses: `.op`, `.dc src start stop step`, `.tran tstep tstop [uic]`,
-`.ac dec|lin n fstart fstop`. With `uic` the operating point is skipped and
-`ic=` values on C and L are used as the initial state (the t=0 output row is
-the zero vector then). `.model name type params` cards are supported for D, M
-and Q; inline parameters override the model. `.print v(out) i(v1) ...`
-restricts the output columns, default is everything. Branch current i(vx) is
-measured into the positive terminal, so a sourcing supply reads negative.
-
-Devices:
+Analyses: .op, .dc source sweep, .tran with adaptive timestep and uic, .ac
+dec/lin. Cards: .model, .print, .end.
 
 | Card | Device |
 |---|---|
@@ -32,49 +28,44 @@ Devices:
 | `Lxxx p n value [ic=i]` | inductor |
 | `Vxxx p n [dc v] [ac mag] [sin(vo va f td theta)] [pulse(v1 v2 td tr tf pw per)]` | voltage source |
 | `Ixxx p n ...` | current source, same spec as V |
-| `Dxxx p n [is=1e-14] [n=1]` | diode, Shockley |
-| `Mxxx d g s b nmos\|pmos [kp=2e-5] [vt0=0] [lambda=0]` | MOSFET level 1, bulk ignored, vt0 is the threshold magnitude for pmos too |
-| `Qxxx c b e npn\|pnp [is=1e-16] [bf=100] [br=1]` | BJT, Ebers-Moll transport model |
+| `Dxxx p n [model] [is=1e-14] [n=1]` | diode |
+| `Mxxx d g s b nmos\|pmos [model] [kp=2e-5] [vt0=0] [lambda=0]` | MOSFET level 1 |
+| `Qxxx c b e npn\|pnp [model] [is=1e-16] [bf=100] [br=1]` | BJT, Ebers-Moll |
 | `Exxx p n cp cn gain` | VCVS |
 | `Gxxx p n cp cn gm` | VCCS |
 
-Netlist rules: the first line is a title, `*` starts a comment line, `;` starts
-a trailing comment, `+` continues the previous line, node `0` or `gnd` is
-ground, unit suffixes `t g meg k m u n p f`.
+The first line is the title. `*` starts a comment line, `;` a trailing
+comment, `+` continues the previous line. Node 0 or gnd is ground. Unit
+suffixes: t g meg k m u n p f. Instance parameters override .model
+parameters. Branch current i(vx) is measured into the positive terminal.
+With uic the operating point is skipped and ic= values seed the state; the
+t=0 row is then the zero vector. `.print v(out) i(v1)` selects output
+columns, default is everything.
 
-## Algorithm
+The MOSFET bulk node is parsed and ignored; vt0 is the threshold magnitude
+for pmos as well. Not supported: subcircuits, .param, junction capacitances,
+noise analysis.
 
-Classic Berkeley SPICE structure: MNA with branch currents for V, L and E,
-Newton-Raphson with pnjlim junction limiting for the operating point, with
-gmin stepping and source stepping as fallbacks, trapezoidal integration with companion models for transient,
-small signal AC linearized at the operating point (the real part of the AC
-matrix is exactly the DC Jacobian).
+## Algorithms
 
-Timestep control is LTE based: a quadratic polynomial predictor through the
-last three accepted points doubles as the Newton starting value, and the
-corrector minus predictor gap yields a Milne style estimate of the trapezoid
-truncation error, which sets the next step through the usual cube root rule
-(TRTOL 7). Iteration count remains the fallback on nonconvergence, and pulse
-source corners are registered as breakpoints that steps land on exactly.
+MNA with branch currents for V, L and E. Newton-Raphson with pnjlim junction
+limiting; gmin stepping and source stepping as operating point fallbacks.
+Transient: trapezoidal companion models, quadratic predictor, LTE timestep
+control, pulse breakpoints. AC: small-signal linearization at the operating
+point. Linear solver: sparse LU with partial pivoting, generic over real and
+complex. Derivations are in report/nanospice.pdf.
 
-The linear solver is a custom sparse LU with partial pivoting, generic over
-real and complex through a small Num trait. Rows are sorted (column, value)
-vectors and elimination is a merge of two sorted rows, so fill-in falls out of
-the merge; since eliminated columns are removed, the pivot column entry of an
-active row is always its first element. There is no Markowitz ordering, matrix
-order follows netlist order. A 2000 node RC ladder solves OP plus an AC sweep
-in tens of milliseconds.
+## Tests
 
-## Not supported
+`cargo test` runs 18 integration tests in tests/cli.rs against the built
+binary: analytic references (RC and RL step response, RC corner frequency,
+LC amplitude and energy conservation, MOSFET and BJT bias points), an
+npn/pnp symmetry check, a randomized resistor ladder verified against a
+Thevenin reduction computed in the test, error handling fuzz cases, and the
+LOC budget guard. Tests and comments do not count toward the budget.
 
-Subcircuits, `.param`, junction capacitances, noise analysis. That is the
-price of the budget.
+## Report
 
-## Examples and tests
+    tectonic report/nanospice.tex
 
-Example netlists live in `circuits/`. The integration tests in `tests/cli.rs`
-check the solver against analytic references (RC and RL step response, RC
-corner frequency, diode KCL consistency, MOSFET bias point) and enforce the
-LOC budget:
-
-    cargo test
+The prebuilt PDF is committed at report/nanospice.pdf.
