@@ -202,6 +202,7 @@ enum Dev {
     M { d: usize, g: usize, s: usize, kp: f64, vt0: f64, lambda: f64, pmos: bool },
     E { p: usize, n: usize, cp: usize, cn: usize, k: f64, br: usize },
     G { p: usize, n: usize, cp: usize, cn: usize, k: f64 },
+    Q { c: usize, b: usize, e: usize, is: f64, bf: f64, br: f64, pnp: bool },
 }
 
 #[derive(Clone)]
@@ -411,6 +412,15 @@ fn parse(src: &str) -> Circuit {
                 cn: nid(tok(&toks, 4)),
                 k: numx(tok(&toks, 5)),
             },
+            'q' => Dev::Q {
+                c: nid(tok(&toks, 1)),
+                b: nid(tok(&toks, 2)),
+                e: nid(tok(&toks, 3)),
+                is: pval(&toks[4..], "is", 1e-16),
+                bf: pval(&toks[4..], "bf", 100.0),
+                br: pval(&toks[4..], "br", 1.0),
+                pnp: toks.get(4).map_or(false, |t| *t == "pnp"),
+            },
             _ => die(&format!("unknown device '{}'", toks[0])),
         };
         devs.push(dev);
@@ -596,7 +606,7 @@ enum Mode<'a> {
     Tran { h: f64, t: f64, st: &'a [[f64; 2]] },
 }
 
-fn assemble(ckt: &Circuit, x: &[f64], lim: &mut [f64], mode: &Mode, gmin: f64) -> Sys<f64> {
+fn assemble(ckt: &Circuit, x: &[f64], lim: &mut [[f64; 2]], mode: &Mode, gmin: f64, limited: &mut bool) -> Sys<f64> {
     let mut s = Sys::new(ckt.nodes.len() + ckt.nb);
     let t_now = if let Mode::Tran { t, .. } = mode { *t } else { 0.0 };
     for (di, dv) in ckt.devs.iter().enumerate() {
@@ -631,8 +641,9 @@ fn assemble(ckt: &Circuit, x: &[f64], lim: &mut [f64], mode: &Mode, gmin: f64) -
             Dev::D { p, n, is, nf } => {
                 let vt = nf * VT;
                 let vcrit = vt * (vt / (SQRT_2 * is)).ln();
-                let vd = pnjlim(x[*p] - x[*n], lim[di], vt, vcrit);
-                lim[di] = vd;
+                let vd = pnjlim(x[*p] - x[*n], lim[di][0], vt, vcrit);
+                *limited |= (vd - (x[*p] - x[*n])).abs() > VNTOL;
+                lim[di][0] = vd;
                 let (id, gd) = diode_eval(vd, *is, vt, gmin);
                 s.quad(*p, *n, *p, *n, gd);
                 s.rhs(*p, gd * vd - id);
@@ -657,6 +668,36 @@ fn assemble(ckt: &Circuit, x: &[f64], lim: &mut [f64], mode: &Mode, gmin: f64) -
                 s.add(*br, *cn, *k);
             }
             Dev::G { p, n, cp, cn, k } => s.quad(*p, *n, *cp, *cn, *k),
+            // Ebers-Moll transport model; computed in the npn frame, the
+            // conductance stamps are sign free and only the rhs carries sg.
+            Dev::Q { c, b, e, is, bf, br, pnp } => {
+                let sg = if *pnp { -1.0 } else { 1.0 };
+                let vcrit = VT * (VT / (SQRT_2 * is)).ln();
+                let vbe = pnjlim(sg * (x[*b] - x[*e]), lim[di][0], VT, vcrit);
+                let vbc = pnjlim(sg * (x[*b] - x[*c]), lim[di][1], VT, vcrit);
+                *limited |= (vbe - sg * (x[*b] - x[*e])).abs() > VNTOL;
+                *limited |= (vbc - sg * (x[*b] - x[*c])).abs() > VNTOL;
+                lim[di] = [vbe, vbc];
+                let ef = (vbe / VT).min(200.0).exp();
+                let er = (vbc / VT).min(200.0).exp();
+                let (gmf, gmr) = (is * ef / VT, is * er / VT);
+                let (gpi, gmu) = (gmf / bf + gmin, gmr / br + gmin);
+                let ib = is * ((ef - 1.0) / bf + (er - 1.0) / br) + gmin * (vbe + vbc);
+                let ic = is * (ef - er) - is * (er - 1.0) / br - gmin * vbc;
+                let ie = -(ic + ib);
+                s.add(*c, *b, gmf - gmr - gmu);
+                s.add(*c, *c, gmr + gmu);
+                s.add(*c, *e, -gmf);
+                s.add(*b, *b, gpi + gmu);
+                s.add(*b, *c, -gmu);
+                s.add(*b, *e, -gpi);
+                s.add(*e, *b, gmr - gmf - gpi);
+                s.add(*e, *c, -gmr);
+                s.add(*e, *e, gmf + gpi);
+                s.rhs(*c, sg * (gmf * vbe - (gmr + gmu) * vbc - ic));
+                s.rhs(*b, sg * (gpi * vbe + gmu * vbc - ib));
+                s.rhs(*e, sg * (gmr * vbc - (gmf + gpi) * vbe - ie));
+            }
         }
     }
     s
@@ -666,26 +707,29 @@ fn tolv(i: usize, nn: usize, a: f64, b: f64) -> f64 {
     (if i < nn { VNTOL } else { ABSTOL }) + RELTOL * a.abs().max(b.abs())
 }
 
-fn newton(ckt: &Circuit, x: &mut Vec<f64>, lim: &mut [f64], mode: &Mode, gmin: f64, maxit: usize) -> Option<usize> {
+fn newton(ckt: &Circuit, x: &mut Vec<f64>, lim: &mut [[f64; 2]], mode: &Mode, gmin: f64, maxit: usize) -> Option<usize> {
     let nn = ckt.nodes.len();
     for it in 1..=maxit {
-        let s = assemble(ckt, x, lim, mode, gmin);
+        // convergence is denied while junction limiting is still active,
+        // otherwise a clamped junction looks like a converged solution
+        let mut limited = false;
+        let s = assemble(ckt, x, lim, mode, gmin, &mut limited);
         let xn = solve(s)?;
         let conv = (1..xn.len()).all(|i| (xn[i] - x[i]).abs() <= tolv(i, nn, xn[i], x[i]));
         *x = xn;
-        if conv && it > 1 {
+        if conv && !limited && it > 1 {
             return Some(it);
         }
     }
     None
 }
 
-fn op_solve(ckt: &Circuit, x: &mut Vec<f64>, lim: &mut [f64]) {
+fn op_solve(ckt: &Circuit, x: &mut Vec<f64>, lim: &mut [[f64; 2]]) {
     if newton(ckt, x, lim, &Mode::Dc, GMIN, ITL_OP).is_some() {
         return;
     }
     x.iter_mut().for_each(|v| *v = 0.0);
-    lim.iter_mut().for_each(|v| *v = 0.0);
+    lim.iter_mut().for_each(|v| *v = [0.0; 2]);
     let mut g = 1e-2;
     while g > GMIN {
         if newton(ckt, x, lim, &Mode::Dc, g, ITL_OP).is_none() {
@@ -698,10 +742,10 @@ fn op_solve(ckt: &Circuit, x: &mut Vec<f64>, lim: &mut [f64]) {
     }
 }
 
-fn op_setup(ckt: &Circuit) -> (usize, Vec<f64>, Vec<f64>) {
+fn op_setup(ckt: &Circuit) -> (usize, Vec<f64>, Vec<[f64; 2]>) {
     let m = ckt.nodes.len() + ckt.nb;
     let mut x = vec![0.0; m];
-    let mut lim = vec![0.0; ckt.devs.len()];
+    let mut lim = vec![[0.0; 2]; ckt.devs.len()];
     op_solve(ckt, &mut x, &mut lim);
     (m, x, lim)
 }
@@ -771,7 +815,7 @@ fn run_dc(ckt: &mut Circuit, src: &str, start: f64, stop: f64, step: f64) {
     }
     let m = ckt.nodes.len() + ckt.nb;
     let mut x = vec![0.0; m];
-    let mut lim = vec![0.0; ckt.devs.len()];
+    let mut lim = vec![[0.0; 2]; ckt.devs.len()];
     out!("# dc");
     out!("{},{}", src, columns(ckt).join(","));
     let npts = ((stop - start) / step).round() as i64;
@@ -900,7 +944,7 @@ fn run_ac(ckt: &Circuit, dec: bool, n: usize, f1: f64, f2: f64) {
     }
     let (m, x, mut lim) = op_setup(ckt);
     // The real part of the AC matrix is exactly the DC Jacobian at the OP.
-    let sdc = assemble(ckt, &x, &mut lim, &Mode::Dc, GMIN);
+    let sdc = assemble(ckt, &x, &mut lim, &Mode::Dc, GMIN, &mut false);
     let mut freqs = Vec::new();
     if dec {
         let mut k = 0;

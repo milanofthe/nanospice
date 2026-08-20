@@ -1,0 +1,13 @@
+common emitter amplifier
+vcc vcc 0 dc 12
+vin in 0 dc 0 ac 1
+cin in b 10u
+r1 vcc b 47k
+r2 b 0 10k
+rc vcc c 4.7k
+re e 0 1k
+ce e 0 100u
+q1 c b e npn is=1e-15 bf=200
+.op
+.ac dec 10 10 10meg
+.end

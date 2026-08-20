@@ -61,6 +61,29 @@ fn op_mos() {
 }
 
 #[test]
+fn op_bjt() {
+    // forward active npn: base current set by rb, check ic = bf * ib
+    let npn = run(
+        "bjt_npn.cir",
+        "npn ce\nvcc vcc 0 dc 5\nrb vcc b 430k\nrc vcc c 1k\nq1 c b 0 npn is=1e-16 bf=100\n.op\n.end\n",
+    );
+    let (h, d) = table(&npn, "op");
+    let (vb, vc) = (d[0][col(&h, "v(b)")], d[0][col(&h, "v(c)")]);
+    assert!(vb > 0.7 && vb < 0.85, "vb = {}", vb);
+    let ib = (5.0 - vb) / 430e3;
+    let ic = (5.0 - vc) / 1e3;
+    assert!((ic - 100.0 * ib).abs() / ic < 1e-3, "beta mismatch: ic={} ib={}", ic, ib);
+    // pnp mirror image of the same circuit must be exactly symmetric
+    let pnp = run(
+        "bjt_pnp.cir",
+        "pnp ce\nvee vee 0 dc -5\nrb vee b 430k\nrc vee c 1k\nq1 c b 0 pnp is=1e-16 bf=100\n.op\n.end\n",
+    );
+    let (h2, d2) = table(&pnp, "op");
+    assert!((d2[0][col(&h2, "v(c)")] + vc).abs() < 1e-6);
+    assert!((d2[0][col(&h2, "v(b)")] + vb).abs() < 1e-6);
+}
+
+#[test]
 fn dc_sweep() {
     let rows = run("sweep.cir", "sweep\nv1 in 0 dc 0\nr1 in out 1k\nr2 out 0 1k\n.dc v1 0 10 1\n.end\n");
     let (h, d) = table(&rows, "dc");
