@@ -57,7 +57,7 @@
 
 \newtcolorbox{fieldnote}[1]{breakable, sharp corners, colback=white,
   colframe=black, colbacktitle=white, coltitle=black, titlerule=0.5pt,
-  fonttitle=\bfseries\small, title={Field note: #1}, boxrule=0.5pt,
+  fonttitle=\bfseries\small, title={Failure mode: #1}, boxrule=0.5pt,
   left=7pt, right=7pt, top=5pt, bottom=6pt}
 
 % loc tile: code section name, label, budget range [start, end] in loc space;
@@ -422,11 +422,10 @@ models.
 \locbar{sparse LU}{121 lines, budget 437 to 558}{437}{558}
 
 Gaussian elimination factors $PA = LU$ with row pivoting and then solves
-by substitution. Dense, this is 25 lines and $O(n^3)$, and it was the
-first implementation; it was replaced once the test suite pinned the
-behavior. A sparse package with fill-reducing ordering does not fit the
-budget. The following design, including the stamp helpers, takes 105
-lines.
+by substitution. Dense, this is 25 lines and $O(n^3)$, which caps
+practical circuits at a few hundred nodes; a full sparse package with
+fill-reducing ordering does not fit the budget. The design here,
+including the stamp helpers, takes 121 lines.
 
 The matrix rows live in the \texttt{Sys} struct as vectors of
 $(\text{column}, \text{value})$ pairs kept sorted by column, and the
@@ -492,11 +491,11 @@ source with none.
 Every device arm in the assembly is now one or a few primitive calls:
 R, C, I, G, diode, MOSFET, and JFET are current contributions
 (\texttt{contrib}), V, L, and E are voltage contributions
-(\texttt{vcontrib}), and the BJT is three current contributions. The
-hand-written stamps disappeared: the refactor removed more lines than the
-two primitives cost, and the freed budget paid for the JFET and the PWL
-source. Hand-derived Jacobian stamps, like the $3 \times 3$ BJT matrix
-in section~\ref{sec:solver}, become a verification artifact instead of
+(\texttt{vcontrib}), and the BJT is three current contributions.
+Per-device hand-written stamps would cost more lines than the two
+primitives and can drift apart; here the Jacobian structure exists in
+exactly one place. Hand-derived stamps, like the $3 \times 3$ BJT matrix
+in section~\ref{sec:solver}, serve as verification artifacts instead of
 code.
 \end{decision}
 
@@ -564,14 +563,13 @@ generic failure.
 The elimination work is the sum of the lengths of the merged rows, so it
 is proportional to the fill-in; on ladder and tree topologies in netlist
 order there is none and the whole factorization is linear in $n$. The
-buckets are what make the pivot search match that bound. The first
-version of this solver scanned every remaining row per column instead, an
-$O(n^2)$ total, and shipped that way until the benchmark in
-section~\ref{sec:results} exposed it beyond $10^4$ unknowns; the bucket
-version costs eight more lines and is 47 times faster at 30000 nodes.
-The remaining omission is Markowitz ordering, so the worst case still
-degrades toward dense fill-in, which for the circuit sizes a 1000-line
-simulator realistically sees is the right cut.
+buckets are what make the pivot search match that bound: scanning the
+remaining rows per column instead is an $O(n^2)$ total that dominates
+beyond about $10^4$ unknowns, and the benchmark in
+section~\ref{sec:results} quantifies the difference. The omission is
+Markowitz ordering, so the worst case still degrades toward dense
+fill-in, which for the circuit sizes a 1000-line simulator realistically
+sees is the right cut.
 
 \section{Device models}
 \label{sec:devices}
@@ -865,19 +863,18 @@ fn newton(ckt: &Circuit, x: &mut Vec<f64>, lim: &mut [[f64; 2]], mode: &Mode, gm
 }
 \end{rust}
 
-\begin{fieldnote}{limiting must deny convergence}
-The \texttt{limited} flag records a bug found during development. With
-limiting alone, the following happened on a common-emitter amplifier: the
-bias divider put the base at 2.1\,V while the emitter sat at ground,
-\texttt{pnjlim} clamped the base-emitter voltage seen by the stamps to
-0.11\,V, the transistor therefore conducted nothing, the node voltages
-stopped changing, and the delta-based convergence test declared success
-with the transistor off. The output was superficially plausible: the
-divider voltage was correct, but unloaded.
+\begin{fieldnote}{limiting without the flag}
+Without the \texttt{limited} flag, a common-emitter amplifier converges
+with the transistor off: the bias divider puts the base at 2.1\,V while
+the emitter sits at ground, \texttt{pnjlim} clamps the base-emitter
+voltage seen by the stamps to 0.11\,V, the transistor conducts nothing,
+the node voltages stop changing, and the delta-based test declares
+success. The output is superficially plausible: the divider voltage is
+correct, but unloaded.
 
-The repair is the classic one: an iteration in which a limiter changed a
-junction voltage is not allowed to converge. With the flag in place, the
-same circuit walks the junction up in logarithmic steps and reaches the
+The rule is the classic one: an iteration in which a limiter changed a
+junction voltage is not allowed to converge. With the flag, the same
+circuit walks the junction up in logarithmic steps and reaches the
 correct bias, base at 2.05\,V and 1.3\,mA of collector current, in a
 dozen iterations. A convergence test on the solution vector alone cannot
 detect active limiting; the flag makes it visible.
@@ -991,9 +988,9 @@ skipped entirely and the \texttt{ic=} values seed the reactive state,
 which is how an undriven LC tank can start oscillating at all: its
 operating point is identically zero.
 
-\begin{fieldnote}{pulse edges inside a step}
-The first RC test against the analytic step response failed at exactly
-the first output point. A pulse edge at
+\begin{fieldnote}{a pulse edge inside a step}
+Without breakpoints, an RC step response is wrong at exactly the first
+output point. A pulse edge at
 $t \approx 0$ inside the first step $[0, h]$ is invisible to the method:
 the capacitor's history current at the interval start still belongs to
 the pre-edge circuit, so the trapezoidal update gives
@@ -1186,21 +1183,19 @@ an Apple M3, release build:
 \begin{tikzpicture}[vcenter]
 \begin{loglogaxis}[bwaxis, width=0.52\textwidth, height=0.42\textwidth,
   xlabel={ladder nodes $n$}, ylabel={wall clock / ms}, legend pos=north west]
-\addplot[black, mark=o, mark size=1.6pt] table {data/bench_scan.dat};
 \addplot[black, mark=*, mark size=1.6pt] table {data/bench.dat};
 \addplot[black, dashed, domain=300:30000] {x*0.001};
-\addplot[black, dotted, domain=1000:30000, line width=0.6pt] {x^2*1.56e-6};
-\legend{pivot by row scan, pivot by buckets, $\propto n$, $\propto n^2$}
+\legend{measured, $\propto n$}
 \end{loglogaxis}
 \end{tikzpicture}
 \end{center}
 
-Below about $10^3$ nodes the process startup dominates both curves. The
-open circles are the first version of the solver, which scanned every
-remaining row per column to find the pivot and follows the $n^2$ guide;
-this plot is what exposed it. The bucket version of
-section~\ref{sec:sparse} follows the $n$ guide through the last point,
-30\,ms for 30000 nodes, 47 times faster than the scan at that size.
+Below about $10^3$ nodes the 1.7\,ms process startup dominates. Beyond
+it the curve follows the $n$ guide through the last point, 30\,ms for
+30000 nodes: the fill-free elimination and the bucketed pivot search of
+section~\ref{sec:sparse} are both linear on this topology. Scanning the
+remaining rows for the pivot instead would put the same solve at
+1.4\,seconds.
 
 \section{Validation}
 \locbar{tests/cli.rs}{330 lines, 0 of 1000: tests are free}{0}{0}

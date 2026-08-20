@@ -76,8 +76,7 @@ d = table(run("lc tank\nc1 a 0 1u\nl1 a 0 1m ic=1m\n.print v(a)\n"
 write("lc.dat", "t v", [[r[0] * 1e6, r[1] * 1e3] for r in d])
 
 # operating point scaling on resistor ladders, wall clock of the whole
-# process; bench_scan.dat is the historical curve of the row-scan pivot
-# search and is not regenerated
+# process
 rows = []
 for n in [100, 300, 1000, 3000, 10000, 30000]:
     nl = ["ladder", "v1 n0 0 dc 10"]
