@@ -45,8 +45,8 @@ ground, unit suffixes `t g meg k m u n p f`.
 ## Algorithm
 
 Classic Berkeley SPICE structure: MNA with branch currents for V, L and E,
-Newton-Raphson with pnjlim junction limiting and gmin stepping for the
-operating point, trapezoidal integration with companion models for transient,
+Newton-Raphson with pnjlim junction limiting for the operating point, with
+gmin stepping and source stepping as fallbacks, trapezoidal integration with companion models for transient,
 small signal AC linearized at the operating point (the real part of the AC
 matrix is exactly the DC Jacobian).
 

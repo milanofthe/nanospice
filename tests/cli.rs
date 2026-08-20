@@ -206,6 +206,89 @@ fn print_selection() {
     assert!((d[0][1] + 5e-3).abs() < 1e-9);
 }
 
+fn run_fail(name: &str, netlist: &str) -> String {
+    let path = std::path::Path::new(env!("CARGO_TARGET_TMPDIR")).join(name);
+    std::fs::write(&path, netlist).unwrap();
+    let out = Command::new(env!("CARGO_BIN_EXE_nanospice")).arg(&path).output().unwrap();
+    let err = String::from_utf8_lossy(&out.stderr).to_string();
+    assert!(!out.status.success(), "expected failure for {}", name);
+    assert!(err.contains("nanospice:"), "no clean error for {}: {}", name, err);
+    assert!(!err.contains("panicked"), "panicked on {}: {}", name, err);
+    err
+}
+
+#[test]
+fn clean_errors() {
+    run_fail("f1.cir", "t\nzz1 a b 1\n.op\n.end\n");
+    run_fail("f2.cir", "t\nr1 a 0 abc\n.op\n.end\n");
+    run_fail("f3.cir", "t\nr1 a 0\n.op\n.end\n");
+    run_fail("f4.cir", "t\nv1 a 0 dc 5\nr1 a 0 1k\n.dc vx 0 1 0.1\n.end\n");
+    run_fail("f5.cir", "t\nr1 a 0 1\u{b5}\n.op\n.end\n");
+    run_fail("f6.cir", "t\n.dc\n.end\n");
+    // a node reachable only through a capacitor has no dc path; the error
+    // must name it
+    let e = run_fail("f7.cir", "t\nv1 a 0 dc 1\nr1 a 0 1k\nc1 a b 1u\n.op\n.end\n");
+    assert!(e.contains("node b"), "missing node name: {}", e);
+}
+
+#[test]
+fn op_random_ladder() {
+    // lcg-randomized resistor ladder checked against a thevenin reduction
+    let mut seed: u64 = 42;
+    let mut rnd = || {
+        seed = seed.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+        1.0 + (seed >> 33) as f64 / 4.3e9 * 99.0
+    };
+    let n = 30;
+    let (mut rs, mut rp) = (Vec::new(), Vec::new());
+    let mut nl = String::from("random ladder\nv1 n0 0 dc 10\n");
+    for i in 0..n {
+        let (a, b) = (rnd(), rnd());
+        nl.push_str(&format!("rs{} n{} n{} {}\n", i, i, i + 1, a));
+        nl.push_str(&format!("rp{} n{} 0 {}\n", i, i + 1, b));
+        rs.push(a);
+        rp.push(b);
+    }
+    nl.push_str(".op\n.end\n");
+    let mut req = vec![0.0; n];
+    for i in (0..n).rev() {
+        let right = if i + 1 < n { rs[i + 1] + req[i + 1] } else { f64::INFINITY };
+        req[i] = 1.0 / (1.0 / rp[i] + 1.0 / right);
+    }
+    let rows = run("randlad.cir", &nl);
+    let (h, d) = table(&rows, "op");
+    let mut v = 10.0;
+    for i in 0..n {
+        v *= req[i] / (rs[i] + req[i]);
+        let got = d[0][col(&h, &format!("v(n{})", i + 1))];
+        assert!((got - v).abs() < 1e-6 * v + 1e-15, "node {}: {} vs {}", i + 1, got, v);
+    }
+}
+
+#[test]
+fn tran_lc_energy() {
+    // 20 periods: the trapezoid rule must not damp the oscillation
+    let rows = run("lce.cir", "lc energy\nc1 a 0 1u\nl1 a 0 1m ic=1m\n.tran 5u 4m uic\n.end\n");
+    let (h, d) = table(&rows, "tran");
+    let c = col(&h, "v(a)");
+    let late = d.iter().filter(|r| r[0] > 3.6e-3).map(|r| r[c].abs()).fold(0.0, f64::max);
+    assert!((late - 0.03162).abs() < 1.5e-3, "late peak = {}", late);
+}
+
+#[test]
+fn op_latch() {
+    // cross coupled nmos latch, a classic hard operating point
+    let rows = run(
+        "latch.cir",
+        "latch\nvdd vdd 0 dc 5\nr1 vdd a 10k\nr2 vdd b 10k\nm1 a b 0 0 nmos kp=1e-3 vt0=1\nm2 b a 0 0 nmos kp=1e-3 vt0=1\n.op\n.end\n",
+    );
+    let (h, d) = table(&rows, "op");
+    for name in ["v(a)", "v(b)"] {
+        let v = d[0][col(&h, name)];
+        assert!((-1e-6..=5.0 + 1e-6).contains(&v), "{} = {}", name, v);
+    }
+}
+
 #[test]
 fn loc_budget() {
     let src = std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/src/main.rs")).unwrap();
