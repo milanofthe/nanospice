@@ -419,16 +419,18 @@ fn parse(src: &str) -> Circuit {
                     nf: pval(&ext, "n", 1.0),
                 }
             }
-            'm' => {
-                let ext = expand(5);
+            // the jfet is the square law device again: kp = 2 beta and a
+            // depletion threshold, so it shares the mosfet variant
+            c @ ('m' | 'j') => {
+                let ext = expand(if c == 'm' { 5 } else { 4 });
                 Dev::M {
                     d: nid(tok(&toks, 1)),
                     g: nid(tok(&toks, 2)),
                     s: nid(tok(&toks, 3)),
-                    kp: pval(&ext, "kp", 2e-5),
-                    vt0: pval(&ext, "vt0", pval(&ext, "vto", 0.0)),
+                    kp: if c == 'm' { pval(&ext, "kp", 2e-5) } else { 2.0 * pval(&ext, "beta", 1e-4) },
+                    vt0: pval(&ext, "vt0", pval(&ext, "vto", if c == 'm' { 0.0 } else { -2.0 })),
                     lambda: pval(&ext, "lambda", 0.0),
-                    pmos: ext.iter().any(|t| *t == "pmos"),
+                    pmos: ext.iter().any(|t| *t == "pmos" || *t == "pjf"),
                 }
             }
             'e' => Dev::E {
@@ -516,6 +518,18 @@ impl<T: Num> Sys<T> {
         self.add(n, br, T::zero() - T::one());
         self.add(br, p, T::one());
         self.add(br, n, T::zero() - T::one());
+    }
+    // Verilog-A style contribution: current i flows p -> n, linearized at
+    // the (possibly limited) evaluation point and shifted to the raw
+    // iterate; ctl lists control pairs with d i / d (x[a] - x[b]).
+    fn contrib(&mut self, p: usize, n: usize, i: T, ctl: &[(usize, usize, T)], x: &[T]) {
+        let mut ieq = i;
+        for &(a, b, g) in ctl {
+            self.quad(p, n, a, b, g);
+            ieq = ieq - g * (x[a] - x[b]);
+        }
+        self.rhs(p, T::zero() - ieq);
+        self.rhs(n, ieq);
     }
 }
 
@@ -687,24 +701,14 @@ fn assemble(ckt: &Circuit, x: &[f64], lim: &mut [[f64; 2]], mode: &Mode, gmin: f
             }
             Dev::D { p, n, is, nf } => {
                 let vt = nf * VT;
-                let vd = junction(x[*p] - x[*n], &mut lim[di][0], vt, *is, limited);
+                let vr = x[*p] - x[*n];
+                let vd = junction(vr, &mut lim[di][0], vt, *is, limited);
                 let (id, gd) = diode_eval(vd, *is, vt, gmin);
-                s.quad(*p, *n, *p, *n, gd);
-                s.rhs(*p, gd * vd - id);
-                s.rhs(*n, id - gd * vd);
+                s.contrib(*p, *n, id + gd * (vr - vd), &[(*p, *n, gd)], x);
             }
             Dev::M { g, .. } => {
                 let (ed, es, i0, gm, gds) = mos_op(dv, x);
-                let gds = gds + gmin;
-                let ieq = i0 - gm * x[*g] - gds * x[ed] + (gm + gds) * x[es];
-                s.add(ed, *g, gm);
-                s.add(ed, ed, gds);
-                s.add(ed, es, -(gm + gds));
-                s.add(es, *g, -gm);
-                s.add(es, ed, -gds);
-                s.add(es, es, gm + gds);
-                s.rhs(ed, -ieq);
-                s.rhs(es, ieq);
+                s.contrib(ed, es, i0, &[(*g, es, gm), (ed, es, gds + gmin)], x);
             }
             Dev::E { p, n, cp, cn, k, br } => {
                 s.branch(*p, *n, *br);
@@ -712,31 +716,24 @@ fn assemble(ckt: &Circuit, x: &[f64], lim: &mut [[f64; 2]], mode: &Mode, gmin: f
                 s.add(*br, *cn, *k);
             }
             Dev::G { p, n, cp, cn, k } => s.quad(*p, *n, *cp, *cn, *k),
-            // Ebers-Moll transport model; computed in the npn frame, the
-            // conductance stamps are sign free and only the rhs carries sg.
+            // Ebers-Moll transport form as three contributions: the two
+            // junctions and the transport source, KCL composes the stamp.
             Dev::Q { c, b, e, is, bf, br, pnp } => {
                 let sg = if *pnp { -1.0 } else { 1.0 };
-                let vbe = junction(sg * (x[*b] - x[*e]), &mut lim[di][0], VT, *is, limited);
-                let vbc = junction(sg * (x[*b] - x[*c]), &mut lim[di][1], VT, *is, limited);
+                let (vbr, vcr) = (sg * (x[*b] - x[*e]), sg * (x[*b] - x[*c]));
+                let vbe = junction(vbr, &mut lim[di][0], VT, *is, limited);
+                let vbc = junction(vcr, &mut lim[di][1], VT, *is, limited);
                 let ef = (vbe / VT).min(200.0).exp();
                 let er = (vbc / VT).min(200.0).exp();
                 let (gmf, gmr) = (is * ef / VT, is * er / VT);
                 let (gpi, gmu) = (gmf / bf + gmin, gmr / br + gmin);
-                let ib = is * ((ef - 1.0) / bf + (er - 1.0) / br) + gmin * (vbe + vbc);
-                let ic = is * (ef - er) - is * (er - 1.0) / br - gmin * vbc;
-                let ie = -(ic + ib);
-                s.add(*c, *b, gmf - gmr - gmu);
-                s.add(*c, *c, gmr + gmu);
-                s.add(*c, *e, -gmf);
-                s.add(*b, *b, gpi + gmu);
-                s.add(*b, *c, -gmu);
-                s.add(*b, *e, -gpi);
-                s.add(*e, *b, gmr - gmf - gpi);
-                s.add(*e, *c, -gmr);
-                s.add(*e, *e, gmf + gpi);
-                s.rhs(*c, sg * (gmf * vbe - (gmr + gmu) * vbc - ic));
-                s.rhs(*b, sg * (gpi * vbe + gmu * vbc - ib));
-                s.rhs(*e, sg * (gmr * vbc - (gmf + gpi) * vbe - ie));
+                let (dbe, dbc) = (vbr - vbe, vcr - vbc);
+                let ibe = is * (ef - 1.0) / bf + gmin * vbe;
+                let ibc = is * (er - 1.0) / br + gmin * vbc;
+                let ict = is * (ef - er);
+                s.contrib(*b, *e, sg * (ibe + gpi * dbe), &[(*b, *e, gpi)], x);
+                s.contrib(*b, *c, sg * (ibc + gmu * dbc), &[(*b, *c, gmu)], x);
+                s.contrib(*c, *e, sg * (ict + gmf * dbe - gmr * dbc), &[(*b, *e, gmf), (*b, *c, -gmr)], x);
             }
         }
     }

@@ -100,6 +100,14 @@ fn op_bjt() {
 }
 
 #[test]
+fn op_jfet() {
+    // n-jfet at vgs = 0 with default beta and vto: id = beta * vto^2 = 0.4 mA
+    let rows = run("jfet.cir", "jfet\nvdd vdd 0 dc 10\nrd vdd d 5k\nj1 d 0 0\n.op\n.end\n");
+    let (h, d) = table(&rows, "op");
+    assert!((d[0][col(&h, "v(d)")] - 8.0).abs() < 1e-4);
+}
+
+#[test]
 fn dc_sweep() {
     let rows = run("sweep.cir", "sweep\nv1 in 0 dc 0\nr1 in out 1k\nr2 out 0 1k\n.dc v1 0 10 1\n.end\n");
     let (h, d) = table(&rows, "dc");
