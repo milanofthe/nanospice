@@ -89,10 +89,9 @@ sits in the 999-line budget.
 The rule: one file, \texttt{src/main.rs}, at most 1000 lines after removing
 blank lines and comments, standard library only. A test reads the file,
 counts, and fails the build above the limit. Tests, example netlists, and
-comments are free. The point of the rule is not minimalism for its own
-sake. A hard budget forces every feature to displace another, which makes
-the cost of each decision explicit, and it keeps the whole simulator
-readable in one sitting, which is the educational goal of the repository.
+comments are free. The budget forces every feature to displace another,
+which makes the cost of each decision explicit, and it keeps the simulator
+readable in one sitting. That is the purpose of the repository.
 
 This report follows the source file from top to bottom. Every section of
 the report corresponds to a section of the file, marked by the same name
@@ -120,9 +119,8 @@ analyses and main & 217 & 999 \\
 \label{tab:budget}
 \end{table}
 
-The parser is the largest consumer, which is typical for the genre: the
-numerics of a circuit simulator are compact, the input format is not.
-Everything the budget excluded is listed with reasons in
+The parser is the largest section: the numerics of a circuit simulator
+are compact, the input format is not. Everything the budget excluded is listed with reasons in
 section~\ref{sec:cuts}.
 
 \section{Background: modified nodal analysis}
@@ -200,16 +198,14 @@ The two-part tolerance $\text{tol} = \tau + \text{RELTOL}\cdot|x|$ appears
 in both the Newton test and the timestep control. The relative part scales
 with signal amplitude; the absolute floor $\tau$ (VNTOL for voltages,
 ABSTOL for currents) keeps nodes that sit near zero from demanding
-impossible precision. TRTOL exists because the truncation error estimate
-is conservative; SPICE2 shipped the value 7 and it survived four decades of
-scrutiny.
+impossible precision. TRTOL compensates for the conservative truncation error
+estimate; the value 7 is the SPICE2 default.
 
 The remaining plumbing is a \texttt{die} helper that prints to stderr and
 exits, and an \texttt{out!} macro for stdout that exits quietly when the
 pipe closes. The macro exists because of a Unix detail: Rust ignores
 SIGPIPE, so a plain \texttt{println!} panics with a backtrace when the
-output is piped into \texttt{head}. A CLI that prints CSV must survive
-its consumers hanging up.
+output is piped into \texttt{head} and the pipe closes.
 
 \section{Numbers}
 \locbar{numbers}{78 lines, budget 23 to 101}{23}{101}
@@ -244,11 +240,9 @@ algorithm.
 
 \begin{decision}{one generic solver instead of two copies}
 The trait plus the operator implementations cost about 45 lines. Two
-copies of the sparse factorization would cost about 55 and, worse, could
-drift apart silently. The generic version also forces the pivoting
-strategy to be expressed once, through \texttt{mag}, instead of being
-duplicated with a subtle difference. This is the entire price Rust
-charges for not shipping a complex type in std.
+copies of the sparse factorization would cost about 55 and could drift
+apart silently. The generic version also expresses the pivoting strategy
+once, through \texttt{mag}, instead of duplicating it.
 \end{decision}
 
 The section closes with the SPICE number grammar: the longest prefix of a
@@ -305,16 +299,15 @@ enum Dev {
 \end{rust}
 
 \begin{decision}{an enum, not a device trait}
-The object-oriented reflex is a \texttt{Device} trait with a
-\texttt{stamp} method per implementation. In Rust that costs a trait
-definition, one \texttt{impl} block per device with repeated method
-signatures, and dynamic dispatch or generics plumbing. The enum costs one
-declaration and a \texttt{match} arm per device at each use site, and the
-compiler checks exhaustively that no device is forgotten in any of them:
-assembly, output naming, breakpoint collection, state initialization.
-Three bugs were caught at compile time this way while features were added.
-For a closed set of ten devices, the enum wins on every axis that matters
-here.
+The alternative is a \texttt{Device} trait with a \texttt{stamp} method
+per implementation, which costs a trait definition, one \texttt{impl}
+block per device, and dispatch plumbing. The enum costs one declaration
+and a \texttt{match} arm per device at each use site, and the compiler
+checks exhaustively that no device is missing in any of them: assembly,
+output naming, breakpoint collection, state initialization. Three such
+omissions were caught at compile time while features were added. The
+device set is closed, so the extensibility a trait would buy is not
+needed.
 \end{decision}
 
 Source waveforms are a second enum with the standard SPICE semantics. The
@@ -331,7 +324,7 @@ here because a NaN initial condition is meaningless anyway.
 \section{The parser}
 \locbar{parser}{262 lines, budget 164 to 426}{164}{426}
 
-The parser is the largest section and the least glamorous. Preprocessing
+The parser is the largest section. Preprocessing
 runs once per line: strip trailing comments after \texttt{;}, lowercase,
 replace parentheses and commas by spaces, then apply the line discipline.
 The first line of the file is a title, \texttt{*} starts a comment line,
@@ -377,11 +370,9 @@ requires a clean named error and no panic for each.
 
 \begin{decision}{no subcircuits}
 \texttt{.subckt} costs roughly a hundred lines of name spacing, port
-mapping, and flattening, and it is the single most requested feature of
-any SPICE clone, because real decks are hierarchical. It lost the budget
-fight against the transistor models: a simulator that cannot bias a
-transistor teaches less than one that cannot flatten a hierarchy. This is
-the cut that hurts most.
+mapping, and flattening. Real decks are hierarchical, so this is the most
+limiting omission in practice. It was cut in favor of the transistor
+models.
 \end{decision}
 
 \section{Sparse LU}
@@ -389,9 +380,9 @@ the cut that hurts most.
 
 Gaussian elimination factors $PA = LU$ with row pivoting and then solves
 by substitution. Dense, this is 25 lines and $O(n^3)$, and it was the
-first implementation, replaced wholesale once the test suite could pin the
-behavior. The budget does not permit a real sparse package with
-fill-reducing ordering, but it does permit the following 96-line design.
+first implementation; it was replaced once the test suite pinned the
+behavior. A sparse package with fill-reducing ordering does not fit the
+budget. The following design takes 96 lines.
 
 The matrix rows live in the \texttt{Sys} struct as vectors of
 $(\text{column}, \text{value})$ pairs kept sorted by column, and the
@@ -416,12 +407,11 @@ fn branch(&mut self, p: usize, n: usize, br: usize) {
 \begin{decision}{a dummy ground row}
 Ground is unknown 0 and the solver loops start at 1. The alternative is
 an \emph{if node is not ground} test inside every stamp, roughly two
-dozen branches across ten devices, each a copy-paste bug waiting to
-happen. One guard inside \texttt{add} replaces all of them, and
-$x_0 = 0$ is pinned after the solve. The conductance quad above also
-covers the VCCS (rows at the output nodes, columns at the controlling
-nodes), and \texttt{branch} covers V, L, and E, so the ten devices share
-two stamp helpers.
+dozen branches across ten devices. One guard inside \texttt{add}
+replaces all of them, and $x_0 = 0$ is pinned after the solve. The
+conductance quad above also covers the VCCS (rows at the output nodes,
+columns at the controlling nodes), and \texttt{branch} covers V, L, and
+E, so the ten devices share two stamp helpers.
 \end{decision}
 
 \begin{derivation}{the first-entry invariant}
@@ -434,9 +424,8 @@ column $k$ have it eliminated, and the elimination removes that entry
 from the row; rows without column $k$ are untouched. Afterwards every row
 at index $> k$ holds only columns $\ge k+1$. $\square$
 
-The consequence carries the whole design: if a row at index $i \ge k$ has
-an entry in column $k$ at all, that entry is the \emph{first} element of
-its sorted vector. Pivot search over column $k$ reduces to comparing the
+Consequence: if a row at index $i \ge k$ has an entry in column $k$ at
+all, that entry is the \emph{first} element of its sorted vector. Pivot search over column $k$ reduces to comparing the
 first elements of the candidate rows, an $O(1)$ probe per row instead of
 a search, with no column-linked index structure to maintain.
 \end{derivation}
@@ -528,8 +517,7 @@ substituting back:
 \quad\Longrightarrow\quad
 v_{crit} = V_T \ln \frac{V_T}{\sqrt{2}\, I_S}.
 \]
-For $I_S = 10^{-14}$\,A this is about $0.72$\,V, right where a silicon
-junction starts conducting hard. Beyond $v_{crit}$, \texttt{pnjlim}
+For $I_S = 10^{-14}$\,A this is about $0.72$\,V. Beyond $v_{crit}$, \texttt{pnjlim}
 replaces a proposed step by a logarithmic one,
 $v \leftarrow v_{old} + V_T \ln\bigl(1 + (v_{new} - v_{old})/V_T\bigr)$,
 which advances the junction a controlled amount per iteration regardless
@@ -710,22 +698,21 @@ fn newton(ckt: &Circuit, x: &mut Vec<f64>, lim: &mut [[f64; 2]], mode: &Mode, gm
 \end{rust}
 
 \begin{fieldnote}{limiting must deny convergence}
-The \texttt{limited} flag is a bug fix with a story. With limiting alone,
-the following happened on a common-emitter amplifier: the bias divider
-put the base at 2.1\,V while the emitter sat at ground, \texttt{pnjlim}
-clamped the base-emitter voltage seen by the stamps to 0.11\,V, the
-transistor therefore conducted nothing, the node voltages stopped
-changing, and the delta-based convergence test declared success with the
-transistor completely off. The output looked plausible: the divider
-voltage was exactly right, only unloaded.
+The \texttt{limited} flag records a bug found during development. With
+limiting alone, the following happened on a common-emitter amplifier: the
+bias divider put the base at 2.1\,V while the emitter sat at ground,
+\texttt{pnjlim} clamped the base-emitter voltage seen by the stamps to
+0.11\,V, the transistor therefore conducted nothing, the node voltages
+stopped changing, and the delta-based convergence test declared success
+with the transistor off. The output was superficially plausible: the
+divider voltage was correct, but unloaded.
 
-The repair is the classic one: an iteration in which a limiter actually
-changed a junction voltage is not allowed to converge. With the flag in
-place, the same circuit walks the junction up in logarithmic steps and
-lands on the correct bias, base at 2.05\,V and 1.3\,mA of collector
-current, in a dozen iterations. The general lesson: a convergence test
-that only watches the solution vector trusts the model evaluation to be
-honest, and limiting makes it dishonest on purpose.
+The repair is the classic one: an iteration in which a limiter changed a
+junction voltage is not allowed to converge. With the flag in place, the
+same circuit walks the junction up in logarithmic steps and reaches the
+correct bias, base at 2.05\,V and 1.3\,mA of collector current, in a
+dozen iterations. A convergence test on the solution vector alone cannot
+detect active limiting; the flag makes it visible.
 \end{fieldnote}
 
 \paragraph{Continuation fallbacks.}
@@ -735,7 +722,8 @@ is easy at $\lambda = 0$, coincides with $F$ at $\lambda = 1$, and is
 tracked by warm-started Newton solves along the path. Two standard
 families run in order. Gmin stepping puts a conductance $g$ across every
 junction and walks it from $10^{-2}$\,S down to $10^{-12}$\,S decade by
-decade: at large $g$ the circuit is nearly linear and Newton cannot miss.
+decade: at large $g$ the circuit is nearly linear and Newton converges
+reliably.
 Source stepping scales every source value by $\lambda$ ramped from 0.1 to
 1.0: the zero-source circuit has the trivial solution $x = 0$, and each
 increment moves the solution a small, trackable distance. Gmin stepping
@@ -750,8 +738,8 @@ cross-coupled NMOS latch in the test suite exercises the path.
 Output columns are the node voltages in netlist order followed by the
 branch currents in device order, named \texttt{v(node)} and
 \texttt{i(device)}. A \texttt{.print} card filters this list by name;
-unknown names warn on stderr rather than fail, so a typo costs a column,
-not a simulation. The selection maps names to unknown indices once and
+unknown names warn on stderr rather than fail, so a typo drops a column
+instead of aborting the run. The selection maps names to unknown indices once and
 every analysis row is then a gather over that index list.
 
 \section{Analyses}
@@ -761,11 +749,10 @@ every analysis row is then a gather over that index list.
 \paragraph{Operating point and DC sweep.}
 \texttt{.op} is one call into the operating point solver.
 \texttt{.dc} sweeps a source value and re-solves at each point,
-warm-starting from the previous solution, which is itself a continuation
-along the sweep variable: on a smooth branch each solve takes two or
-three iterations. The sweep owns the source: any transient waveform on
-the swept source is dropped, so sweeping a pulse source does what the
-card says instead of silently doing nothing.
+warm-starting from the previous solution, a continuation along the sweep
+variable: on a smooth branch each solve takes two or three iterations.
+The sweep replaces the source specification; any transient waveform on
+the swept source is dropped.
 
 \paragraph{Transient timestep control.}
 The integrator adapts its step to the local truncation error (LTE) of the
@@ -818,15 +805,15 @@ let scale = 0.9 / r.max(1e-8).cbrt();
 
 The predictor doubles as the Newton starting point, which is free and
 usually saves an iteration. Before three points of history exist, and
-after a nonconvergent step (cut by 8, the SPICE2 reflex), the iteration
+after a nonconvergent step (cut by 8, the SPICE2 default), the iteration
 count controls the step instead. With \texttt{uic} the operating point is
 skipped entirely and the \texttt{ic=} values seed the reactive state,
 which is how an undriven LC tank can start oscillating at all: its
 operating point is identically zero.
 
-\begin{fieldnote}{the edge the integrator cannot see}
+\begin{fieldnote}{pulse edges inside a step}
 The first RC test against the analytic step response failed at exactly
-the first output point, and the failure is worth numbers. A pulse edge at
+the first output point. A pulse edge at
 $t \approx 0$ inside the first step $[0, h]$ is invisible to the method:
 the capacitor's history current at the interval start still belongs to
 the pre-edge circuit, so the trapezoidal update gives
@@ -855,7 +842,7 @@ the network equations, and keep first-order terms:
 \]
 where $G$ is the Jacobian of the resistive equations at $x_0$, $C$
 collects the reactances, and $\hat{b}$ holds the \texttt{ac} source
-values. The implementation leans on one observation: at a converged
+values. The implementation uses the following property: at a converged
 operating point the limiters pass voltages through unchanged, so
 \emph{$G$ is exactly the matrix the last Newton iteration already
 assembles}. The AC path calls \texttt{assemble} once, maps the rows to
@@ -902,7 +889,7 @@ test & reference \\
 \end{tabular}
 \end{center}
 
-Two tests deserve emphasis. The randomized ladder builds a 30-stage
+Two tests carry the most weight. The randomized ladder builds a 30-stage
 resistor network from a seeded LCG, computes every node voltage by
 backward Thevenin reduction and forward division inside the test, and
 compares node by node at $10^{-6}$ relative: this validates the sparse
@@ -937,16 +924,16 @@ current-based convergence check & limiting denial covers the failure mode & $\si
 The most consequential physical cut is the junction capacitances: without
 them the semiconductors are purely static, transistors switch
 instantaneously, and a ring oscillator has no defined frequency. It would
-be the first candidate if the budget ever grew.
+be the first addition if the budget grew.
 
 On language: the device enum with exhaustive matching carries the parser,
 the assembly, and the output selection, and is the main reason the budget
 holds. C++ would trade the roughly 60 lines the \texttt{Num} trait and
 complex type cost against visitor or inheritance boilerplate around
 \texttt{std::variant}, roughly a wash with fewer static guarantees.
-Fortran would shine on dense arrays, which this simulator does not use,
-and struggle badly on the parser and the sparse row structure. Python
-would halve the line count and change the point of the exercise.
+Fortran is strong on dense arrays, which this simulator does not use,
+and weak on the parser and the sparse row structure. Python would
+roughly halve the line count at a different performance class.
 
 \section{Closing}
 
@@ -954,7 +941,7 @@ The final count is 999 of 1000 lines, with the classic algorithm set
 complete: MNA, sparse LU with partial pivoting, Newton with pnjlim and
 both continuation fallbacks, trapezoidal integration with LTE control and
 breakpoints, small-signal AC, ten device types, four analyses, model
-cards, initial conditions, and output selection. The one line of headroom
-is left as a reminder that the next feature must pay for itself.
+cards, initial conditions, and output selection. One line of headroom
+remains.
 
 \end{document}
