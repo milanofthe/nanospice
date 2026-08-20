@@ -579,43 +579,53 @@ fn merge<T: Num>(a: &[(usize, T)], p: &[(usize, T)], f: T) -> Vec<(usize, T)> {
     o
 }
 
-fn solve<T: Num>(mut s: Sys<T>) -> Result<Vec<T>, usize> {
-    let m = s.b.len();
+fn solve<T: Num>(s: Sys<T>) -> Result<Vec<T>, usize> {
+    let (mut rows, mut b) = (s.rows, s.b);
+    let m = b.len();
+    // rows never move; cand buckets them by their current first column, so
+    // pivot search and elimination touch only that column's candidates
+    let mut cand: Vec<Vec<usize>> = vec![Vec::new(); m];
+    for (i, r) in rows.iter().enumerate() {
+        if let Some(&(c, _)) = r.first() {
+            cand[c].push(i);
+        }
+    }
+    let mut upiv = vec![0; m];
     for k in 1..m {
+        let ids = std::mem::take(&mut cand[k]);
         let (mut p, mut best) = (0, 0.0);
-        for i in k..m {
-            if let Some(&(c, v)) = s.rows[i].first() {
-                if c == k && v.mag() > best {
-                    best = v.mag();
-                    p = i;
-                }
+        for &i in &ids {
+            let g = rows[i][0].1.mag();
+            if g > best {
+                (best, p) = (g, i);
             }
         }
         if best < 1e-300 {
             return Err(k);
         }
-        s.rows.swap(k, p);
-        s.b.swap(k, p);
-        let prow = std::mem::take(&mut s.rows[k]);
-        let piv = prow[0].1;
-        for i in k + 1..m {
-            if s.rows[i].first().map_or(false, |e| e.0 == k) {
-                let f = s.rows[i][0].1 / piv;
-                s.b[i] = s.b[i] - f * s.b[k];
-                s.rows[i] = merge(&s.rows[i][1..], &prow[1..], f);
+        upiv[k] = p;
+        let prow = std::mem::take(&mut rows[p]);
+        for i in ids {
+            if !rows[i].is_empty() {
+                let f = rows[i][0].1 / prow[0].1;
+                b[i] = b[i] - f * b[p];
+                rows[i] = merge(&rows[i][1..], &prow[1..], f);
+                if let Some(&(c, _)) = rows[i].first() {
+                    cand[c].push(i);
+                }
             }
         }
-        s.rows[k] = prow;
+        rows[p] = prow;
     }
-    let mut x = s.b;
-    for i in (1..m).rev() {
-        let mut sum = x[i];
-        for &(j, v) in &s.rows[i][1..] {
+    let mut x = vec![T::zero(); m];
+    for k in (1..m).rev() {
+        let row = &rows[upiv[k]];
+        let mut sum = b[upiv[k]];
+        for &(j, v) in &row[1..] {
             sum = sum - v * x[j];
         }
-        x[i] = sum / s.rows[i][0].1;
+        x[k] = sum / row[0].1;
     }
-    x[0] = T::zero();
     Ok(x)
 }
 

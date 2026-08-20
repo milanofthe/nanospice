@@ -56,8 +56,8 @@
 {\footnotesize\texttt{#1}\hfill #2}\\[3pt]
 \begin{tikzpicture}
 \pgfmathsetlengthmacro{\bw}{\linewidth-4pt}
-\fill[pattern=north east lines] (0,0) rectangle ({(#3/992)*\bw}, 4pt);
-\fill[black] ({(#3/992)*\bw},0) rectangle ({(#4/992)*\bw}, 4pt);
+\fill[pattern=north east lines] (0,0) rectangle ({(#3/1000)*\bw}, 4pt);
+\fill[black] ({(#3/1000)*\bw},0) rectangle ({(#4/1000)*\bw}, 4pt);
 \draw[black, line width=0.4pt] (0,0) rectangle (\bw, 4pt);
 \end{tikzpicture}%
 \end{tcolorbox}}
@@ -84,7 +84,7 @@ The budget forces every feature to displace another: the cost of each
 decision becomes explicit.
 \vspace{4mm}
 \begin{center}
-{\large current count: \textbf{992 of 1000}}
+{\large current count: \textbf{1000 of 1000}}
 \end{center}
 \end{frame}
 
@@ -128,11 +128,11 @@ constants and plumbing & 23 & 23 \\
 numbers: \texttt{Num} trait, complex, suffixes & 78 & 101 \\
 circuit data model & 61 & 162 \\
 parser & 275 & 437 \\
-sparse LU and stamp helpers & 113 & 550 \\
-device models & 64 & 614 \\
-solver & 142 & 756 \\
-output selection & 26 & 782 \\
-analyses and main & 210 & 992 \\
+sparse LU and stamp helpers & 121 & 558 \\
+device models & 64 & 622 \\
+solver & 142 & 764 \\
+output selection & 26 & 790 \\
+analyses and main & 210 & 1000 \\
 \bottomrule
 \end{tabular}
 \end{center}
@@ -170,7 +170,7 @@ g & -g & 1 \\
 \end{frame}
 
 \begin{frame}{Sparse LU}
-\locbar{sparse LU and stamp helpers}{113 lines}{437}{550}
+\locbar{sparse LU and stamp helpers}{121 lines}{437}{558}
 \vspace{2mm}
 \begin{itemize}
 \item rows are sorted (column, value) vectors; elimination is a merge,
@@ -178,9 +178,10 @@ g & -g & 1 \\
 \end{itemize}
 \vspace{2mm}
 \begin{tile}{The first-entry invariant}
-Before step $k$, every row at index $i \ge k$ contains only columns
-$\ge k$: a column-$k$ entry is always the \emph{first} element. Pivot
-search is an $O(1)$ probe per row, no column index structure.
+Every active row contains only columns $\ge k$: a column-$k$ entry is
+always the \emph{first} element, so rows bucket by their first column
+and pivot search reads one bucket. The factorization is linear on
+ladders and trees.
 \end{tile}
 \vspace{2mm}
 \begin{itemize}
@@ -446,7 +447,7 @@ midband $g_m R_C \approx 240$, exactly $47.6$\,dB in the flat region
 \end{itemize}
 \end{frame}
 
-\begin{frame}{Benchmark: ladder operating points}
+\begin{frame}{Benchmark: the plot that fixed the solver}
 \begin{columns}[c]
 \column{0.55\textwidth}
 \begin{center}
@@ -454,25 +455,27 @@ midband $g_m R_C \approx 240$, exactly $47.6$\,dB in the flat region
 \begin{loglogaxis}[bwaxis, width=0.95\linewidth, height=0.66\linewidth,
   xlabel={ladder nodes $n$}, ylabel={wall clock / ms},
   legend pos=north west]
+\addplot[black, mark=o, mark size=1.6pt] table {../report/data/bench_scan.dat};
 \addplot[black, mark=*, mark size=1.6pt] table {../report/data/bench.dat};
-\addplot[black, dashed, domain=1000:30000] {x*0.00386};
+\addplot[black, dashed, domain=300:30000] {x*0.001};
 \addplot[black, dotted, domain=1000:30000, line width=0.6pt] {x^2*1.56e-6};
-\legend{measured, $\propto n$, $\propto n^2$}
+\legend{pivot by row scan, pivot by buckets, $\propto n$, $\propto n^2$}
 \end{loglogaxis}
 \end{tikzpicture}
 \end{center}
 \column{0.42\textwidth}
 \begin{itemize}
-\item below $10^3$ nodes: 2.4\,ms process startup dominates
-\item elimination follows $n$ on the ladder
-\item beyond $10^4$: the pivot probe over all remaining rows, $O(n^2)$
-      total, the price of no column index
+\item the first version scanned every remaining row per column: $O(n^2)$,
+      exposed by this plot
+\item per-column buckets fixed it in eight lines
+\item 30000 nodes: 1404\,ms $\rightarrow$ 30\,ms, linear through the
+      last point
 \end{itemize}
 \end{columns}
 \end{frame}
 
 \begin{frame}{Validation}
-\locbar{tests/cli.rs}{330 lines, 0 of 992: tests are free}{0}{0}
+\locbar{tests/cli.rs}{330 lines, 0 of 1000: tests are free}{0}{0}
 \vspace{2mm}
 23 integration tests, references independent of the implementation:
 \begin{itemize}
@@ -492,7 +495,6 @@ feature & why it lost & est. lines \\
 \midrule
 \texttt{.subckt} hierarchy & lost to the transistor models & $\sim$100 \\
 Markowitz ordering & netlist order suffices & $\sim$80 \\
-pivot candidate lists & $O(n^2)$ acceptable at this scale & $\sim$30 \\
 Gummel-Poon BJT & Ebers-Moll covers the core & $\sim$80 \\
 noise analysis & needs the adjoint system & $\sim$80 \\
 \texttt{.param} expressions & a calculator is its own project & $\sim$60 \\
@@ -506,7 +508,7 @@ hierarchical.
 
 \begin{frame}{Closing}
 \begin{center}
-{\large \textbf{992 of 1000 lines}}
+{\large \textbf{1000 of 1000 lines}}
 \end{center}
 \vspace{2mm}
 Sparse LU, two contribution primitives, Newton with limiting and homotopy

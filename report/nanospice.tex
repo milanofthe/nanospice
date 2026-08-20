@@ -67,8 +67,8 @@
 {\small\texttt{#1}\hfill #2}\\[4pt]
 \begin{tikzpicture}
 \pgfmathsetlengthmacro{\bw}{\linewidth-4pt}
-\fill[pattern=north east lines] (0,0) rectangle ({(#3/992)*\bw}, 4.5pt);
-\fill[black] ({(#3/992)*\bw},0) rectangle ({(#4/992)*\bw}, 4.5pt);
+\fill[pattern=north east lines] (0,0) rectangle ({(#3/1000)*\bw}, 4.5pt);
+\fill[black] ({(#3/1000)*\bw},0) rectangle ({(#4/1000)*\bw}, 4.5pt);
 \draw[black, line width=0.4pt] (0,0) rectangle (\bw, 4.5pt);
 \end{tikzpicture}%
 \end{tcolorbox}\medskip}
@@ -118,11 +118,11 @@ constants, error and output plumbing & 23 & 23 \\
 numbers: \texttt{Num} trait, complex, unit suffixes & 78 & 101 \\
 circuit data model & 61 & 162 \\
 parser & 275 & 437 \\
-sparse LU and stamp helpers & 113 & 550 \\
-device models & 64 & 614 \\
-solver: assembly, Newton, operating point & 142 & 756 \\
-output selection & 26 & 782 \\
-analyses and main & 210 & 992 \\
+sparse LU and stamp helpers & 121 & 558 \\
+device models & 64 & 622 \\
+solver: assembly, Newton, operating point & 142 & 764 \\
+output selection & 26 & 790 \\
+analyses and main & 210 & 1000 \\
 \bottomrule
 \end{tabular}
 \caption{Line budget by code section, in file order.}
@@ -418,7 +418,7 @@ models.
 
 \section{Sparse LU}
 \label{sec:sparse}
-\locbar{sparse LU}{113 lines, budget 437 to 550}{437}{550}
+\locbar{sparse LU}{121 lines, budget 437 to 558}{437}{558}
 
 Gaussian elimination factors $PA = LU$ with row pivoting and then solves
 by substitution. Dense, this is 25 lines and $O(n^3)$, and it was the
@@ -501,18 +501,19 @@ code.
 
 \begin{derivation}{the first-entry invariant}
 The factorization maintains: \emph{before elimination step $k$, every row
-stored at index $i \ge k$ contains only columns $\ge k$.}
+not yet chosen as a pivot contains only columns $\ge k$.}
 
 Base case: column 0 is never stored, so before step 1 all rows hold
-columns $\ge 1$. Step: at step $k$ the rows at indices $> k$ that contain
-column $k$ have it eliminated, and the elimination removes that entry
-from the row; rows without column $k$ are untouched. Afterwards every row
-at index $> k$ holds only columns $\ge k+1$. $\square$
+columns $\ge 1$. Step: at step $k$ the active rows that contain column
+$k$ have it eliminated, and the elimination removes that entry from the
+row; rows without column $k$ are untouched. Afterwards every active row
+holds only columns $\ge k+1$. $\square$
 
-Consequence: if a row at index $i \ge k$ has an entry in column $k$ at
-all, that entry is the \emph{first} element of its sorted vector. Pivot search over column $k$ reduces to comparing the
-first elements of the candidate rows, an $O(1)$ probe per row instead of
-a search, with no column-linked index structure to maintain.
+Consequence: if an active row has an entry in column $k$ at all, that
+entry is the \emph{first} element of its sorted vector. Pivot search
+over column $k$ reduces to comparing first elements, and the first
+column of a row is exactly the elimination step that will consume it,
+which makes rows bucketable by column.
 \end{derivation}
 
 The row update against the pivot row is a merge of two sorted sequences.
@@ -545,12 +546,14 @@ fn merge<T: Num>(a: &[(usize, T)], p: &[(usize, T)], f: T) -> Vec<(usize, T)> {
 }
 \end{rust}
 
-Pivoting selects the largest \texttt{mag} among the candidate first
-entries and swaps rows whole. MNA makes pivoting mandatory, not optional:
-the constraint row of every voltage source has a structural zero on the
-diagonal, visible in the divider example of section 2, so a factorization
-without row exchanges fails on essentially every netlist. If no candidate
-entry exists for column $k$, the trailing submatrix has an empty column
+Rows never move. A bucket list per column holds the rows whose current
+first entry is that column: step $k$ takes bucket $k$, picks the largest
+\texttt{mag} as the pivot, eliminates the rest, and pushes each
+eliminated row into the bucket of its new first column; a permutation
+records which row became which $U$ row for the back substitution. MNA
+makes pivoting mandatory: the constraint row of every voltage source has
+a structural zero on the diagonal, visible in the divider example of
+section 2. If a bucket is empty the trailing matrix has an empty column
 and is singular; the factorization returns the failing column index and
 the caller maps it to a node or branch name. The most common user error,
 a node with no DC path to ground, produces
@@ -559,18 +562,19 @@ generic failure.
 
 The elimination work is the sum of the lengths of the merged rows, so it
 is proportional to the fill-in; on ladder and tree topologies in netlist
-order there is none and the merges are linear in $n$. The pivot search is
-not: it probes the first entry of every remaining row per column, an
-$O(n^2)$ total that the benchmark in section~\ref{sec:results} makes
-visible beyond about $10^4$ unknowns. A column-linked candidate structure
-would remove it and joins Markowitz ordering on the cut list; for the
-circuit sizes a 1000-line simulator realistically sees, a 2000-node
-ladder solving its operating point plus an AC sweep in about ten
-milliseconds, both are the right cut.
+order there is none and the whole factorization is linear in $n$. The
+buckets are what make the pivot search match that bound. The first
+version of this solver scanned every remaining row per column instead, an
+$O(n^2)$ total, and shipped that way until the benchmark in
+section~\ref{sec:results} exposed it beyond $10^4$ unknowns; the bucket
+version costs eight more lines and is 47 times faster at 30000 nodes.
+The remaining omission is Markowitz ordering, so the worst case still
+degrades toward dense fill-in, which for the circuit sizes a 1000-line
+simulator realistically sees is the right cut.
 
 \section{Device models}
 \label{sec:devices}
-\locbar{device models}{64 lines, budget 550 to 614}{550}{614}
+\locbar{device models}{64 lines, budget 558 to 622}{558}{622}
 
 This section holds the semiconductor mathematics: the diode evaluation,
 the junction limiting shared by diode and BJT, and the MOSFET square law.
@@ -716,7 +720,7 @@ parameter defaults and nothing anywhere else.
 
 \section{The solver}
 \label{sec:solver}
-\locbar{solver: assembly, Newton, operating point}{142 lines, budget 614 to 756}{614}{756}
+\locbar{solver: assembly, Newton, operating point}{142 lines, budget 622 to 764}{622}{764}
 
 \paragraph{Companion linearization.}
 A nonlinear device current $i(v)$ enters the linear system as its tangent
@@ -908,7 +912,7 @@ can converge to the wrong branch. A cross-coupled NMOS latch in the test
 suite exercises the path.
 
 \section{Output selection}
-\locbar{output}{26 lines, budget 756 to 782}{756}{782}
+\locbar{output}{26 lines, budget 764 to 790}{764}{790}
 
 Output columns are the node voltages in netlist order followed by the
 branch currents in device order, named \texttt{v(node)} and
@@ -919,7 +923,7 @@ every analysis row is then a gather over that index list.
 
 \section{Analyses}
 \label{sec:analyses}
-\locbar{analyses and main}{210 lines, budget 782 to 992}{782}{992}
+\locbar{analyses and main}{210 lines, budget 790 to 1000}{790}{1000}
 
 \paragraph{Operating point and DC sweep.}
 \texttt{.op} is one call into the operating point solver.
@@ -1048,9 +1052,15 @@ the figures read. Analytic references are drawn dashed.
 The first transient test in the suite, plotted against its closed form:
 
 \begin{center}
+\begin{circuitikz}[american, scale=0.85, transform shape]
+\draw (0,0) node[ground]{} to[V, invert, l=$v_{step}$] (0,2.2)
+  to[R, l=$1\,\mathrm{k\Omega}$] (2.8,2.2) node[circ]{} node[above]{$v_{out}$}
+  to[C, l=$1\,\mu\mathrm{F}$] (2.8,0) node[ground]{};
+\end{circuitikz}
+\hspace{8mm}
 \begin{tikzpicture}
-\begin{axis}[bwaxis, xlabel={$t$ / ms}, ylabel={$v_{out}$ / V},
-  legend pos=south east]
+\begin{axis}[bwaxis, width=0.5\textwidth, height=0.34\textwidth,
+  xlabel={$t$ / ms}, ylabel={$v_{out}$ / V}, legend pos=south east]
 \addplot[black, thick] table {data/rc.dat};
 \addplot[black, dashed, domain=0:5, samples=120] {1 - exp(-x)};
 \legend{nanospice, $1 - e^{-t/\tau}$}
@@ -1116,8 +1126,15 @@ The trapezoidal rule is undamped, so the amplitude holds at
 $i_0 \sqrt{L/C} = 31.6$\,mV (dashed):
 
 \begin{center}
+\begin{circuitikz}[american, scale=0.85, transform shape]
+\draw (0,2.2) node[circ]{} node[above]{$a$} -- (2.2,2.2)
+  to[C, l=$1\,\mu\mathrm{F}$] (2.2,0);
+\draw (0,2.2) to[L, l=$1\,\mathrm{mH}$, i>_=$i_0$] (0,0) -- (2.2,0) node[ground]{};
+\end{circuitikz}
+\hspace{8mm}
 \begin{tikzpicture}
-\begin{axis}[bwaxis, xlabel={$t$ / $\mu$s}, ylabel={$v$ / mV}]
+\begin{axis}[bwaxis, width=0.56\textwidth, height=0.32\textwidth,
+  xlabel={$t$ / $\mu$s}, ylabel={$v$ / mV}]
 \addplot[black] table {data/lc.dat};
 \addplot[black, dashed, domain=0:600] {31.62};
 \addplot[black, dashed, domain=0:600] {-31.62};
@@ -1154,30 +1171,41 @@ then the ring settles to a 78\,ns period:
 \end{center}
 
 \paragraph{Benchmark.}
-Operating point of RC ladders of increasing size, wall clock of the whole
-process (parse, solve, print one column), best of several runs on an
-Apple M3, release build:
+Operating point of resistor ladders of increasing size, wall clock of the
+whole process (parse, solve, print one column), best of several runs on
+an Apple M3, release build:
+
+\begin{center}
+\begin{circuitikz}[american, scale=0.8, transform shape]
+\draw (0,0) node[ground]{} to[V, invert, l=$10\,\mathrm{V}$] (0,1.8)
+  to[R, l=$R_s$] (2.2,1.8) node[circ]{} to[R, l=$R_p$] (2.2,0) node[ground]{};
+\draw (2.2,1.8) to[R, l=$R_s$] (4.4,1.8) node[circ]{} to[R, l=$R_p$] (4.4,0) node[ground]{};
+\draw (4.4,1.8) -- (5.2,1.8) node[right]{$\cdots\;\; n$ sections};
+\end{circuitikz}
+\end{center}
 
 \begin{center}
 \begin{tikzpicture}
 \begin{loglogaxis}[bwaxis, xlabel={ladder nodes $n$},
   ylabel={wall clock / ms}, legend pos=north west]
+\addplot[black, mark=o, mark size=1.6pt] table {data/bench_scan.dat};
 \addplot[black, mark=*, mark size=1.6pt] table {data/bench.dat};
-\addplot[black, dashed, domain=1000:30000] {x*0.00386};
+\addplot[black, dashed, domain=300:30000] {x*0.001};
 \addplot[black, dotted, domain=1000:30000, line width=0.6pt] {x^2*1.56e-6};
-\legend{measured, $\propto n$, $\propto n^2$}
+\legend{pivot by row scan, pivot by buckets, $\propto n$, $\propto n^2$}
 \end{loglogaxis}
 \end{tikzpicture}
 \end{center}
 
-Below about $10^3$ nodes the 2.4\,ms process startup dominates. The
-elimination itself follows the $n$ guide; the departure toward the $n^2$
-guide beyond $10^4$ unknowns is the pivot search probing every remaining
-row per column, the price of having no column-linked index structure
-(section~\ref{sec:sparse}).
+Below about $10^3$ nodes the process startup dominates both curves. The
+open circles are the first version of the solver, which scanned every
+remaining row per column to find the pivot and follows the $n^2$ guide;
+this plot is what exposed it. The bucket version of
+section~\ref{sec:sparse} follows the $n$ guide through the last point,
+30\,ms for 30000 nodes, 47 times faster than the scan at that size.
 
 \section{Validation}
-\locbar{tests/cli.rs}{330 lines, 0 of 992: tests are free}{0}{0}
+\locbar{tests/cli.rs}{330 lines, 0 of 1000: tests are free}{0}{0}
 
 The test suite is 23 integration tests that run the built binary on real
 netlists and parse its CSV. Tests do not count toward the budget, so
@@ -1238,7 +1266,6 @@ feature & why it lost & est. lines \\
 \midrule
 \texttt{.subckt} hierarchy & lost to the transistor models & $\sim$100 \\
 Markowitz ordering & netlist order suffices at this scale & $\sim$80 \\
-pivot candidate lists & $O(n^2)$ probing acceptable at this scale & $\sim$30 \\
 Gummel-Poon BJT & Ebers-Moll covers the teaching core & $\sim$80 \\
 noise analysis & needs the adjoint system & $\sim$80 \\
 \texttt{.param} expressions & a calculator is its own project & $\sim$60 \\
@@ -1264,7 +1291,7 @@ roughly halve the line count at a different performance class.
 
 \section{Closing}
 
-The final count is 992 of 1000 lines, with the classic algorithm set
+The final count is 1000 of 1000 lines, with the classic algorithm set
 complete: MNA, sparse LU with partial pivoting, two Verilog-A style
 contribution primitives carrying all device stamps, Newton with pnjlim
 and both continuation fallbacks as data-driven homotopy paths,
@@ -1272,6 +1299,6 @@ trapezoidal integration with LTE control, breakpoints and damped restart
 steps, charge and flux based reactive state with graded junction
 capacitances, small-signal AC, eleven device letters with three source
 waveforms, four analyses, model cards, initial conditions, and output
-selection. Eight lines of headroom remain.
+selection. The budget is spent exactly.
 
 \end{document}
