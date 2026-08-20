@@ -58,8 +58,8 @@
 {\small\texttt{#1}\hfill #2}\\[4pt]
 \begin{tikzpicture}
 \pgfmathsetlengthmacro{\bw}{\linewidth-4pt}
-\fill[pattern=north east lines] (0,0) rectangle ({(#3/977)*\bw}, 4.5pt);
-\fill[black] ({(#3/977)*\bw},0) rectangle ({(#4/977)*\bw}, 4.5pt);
+\fill[pattern=north east lines] (0,0) rectangle ({(#3/997)*\bw}, 4.5pt);
+\fill[black] ({(#3/997)*\bw},0) rectangle ({(#4/997)*\bw}, 4.5pt);
 \draw[black, line width=0.4pt] (0,0) rectangle (\bw, 4.5pt);
 \end{tikzpicture}%
 \end{tcolorbox}\medskip}
@@ -108,12 +108,12 @@ code section & lines & cumulative \\
 constants, error and output plumbing & 23 & 23 \\
 numbers: \texttt{Num} trait, complex, unit suffixes & 78 & 101 \\
 circuit data model & 61 & 162 \\
-parser & 272 & 434 \\
-sparse LU and stamp helpers & 113 & 547 \\
-device models & 50 & 597 \\
-solver: assembly, Newton, operating point & 146 & 743 \\
-output selection & 26 & 769 \\
-analyses and main & 208 & 977 \\
+parser & 275 & 437 \\
+sparse LU and stamp helpers & 113 & 550 \\
+device models & 64 & 614 \\
+solver: assembly, Newton, operating point & 147 & 761 \\
+output selection & 26 & 787 \\
+analyses and main & 210 & 997 \\
 \bottomrule
 \end{tabular}
 \caption{Line budget by code section, in file order.}
@@ -332,7 +332,7 @@ wrapper and its pattern matching at every use site; NaN is unambiguous
 here because a NaN initial condition is meaningless anyway.
 
 \section{The parser}
-\locbar{parser}{272 lines, budget 162 to 434}{162}{434}
+\locbar{parser}{275 lines, budget 162 to 437}{162}{437}
 
 The parser is the largest section. Preprocessing
 runs once per line: strip trailing comments after \texttt{;}, lowercase,
@@ -386,17 +386,18 @@ requires a clean named error and no panic for each.
 \begin{decision}{junction capacitances by desugaring}
 Junction and gate capacitances (\texttt{cjo} on the diode, \texttt{cje}
 and \texttt{cjc} on the BJT, \texttt{cgs} and \texttt{cgd} on MOSFET
-and JFET) are constant capacitances in this simulator, and a constant
-capacitance across a node pair is exactly the \texttt{C} device. The
-parser therefore desugars them: a device line with capacitance parameters
-pushes internal \texttt{Dev::C} instances alongside the device. No
-assembly, state, timestep, or AC code knows they exist; transient
+and JFET) are capacitances across a node pair, which is exactly the
+\texttt{C} device. The parser therefore desugars them: a device line
+with capacitance parameters pushes internal \texttt{Dev::C} instances
+alongside the device (with the junction orientation flipped for the pnp).
+No assembly, state, timestep, or AC code knows they exist; transient
 integration, LTE control, and the $j\omega C$ stamps come along for
-free. The price of the simplification is the missing depletion
-nonlinearity $C_j(v)$, which changes waveform shapes but not the
-RC-limited switching behavior. With the capacitances present, transistors
-switch in finite time and a three-stage ring oscillator has a defined
-period; an integration test measures it and requires it to be stable.
+free. Junctions carry the grading exponent \texttt{mj} (default 0.5),
+gate oxide capacitances are linear, and the \texttt{m=} parameter is
+available on the user-level \texttt{C} card as well. With the
+capacitances present, transistors switch in finite time and a three-stage
+ring oscillator has a defined period; an integration test measures it and
+requires it to be stable.
 \end{decision}
 
 \begin{decision}{no subcircuits}
@@ -407,7 +408,7 @@ models.
 \end{decision}
 
 \section{Sparse LU}
-\locbar{sparse LU}{113 lines, budget 434 to 547}{434}{547}
+\locbar{sparse LU}{113 lines, budget 437 to 550}{437}{550}
 
 Gaussian elimination factors $PA = LU$ with row pivoting and then solves
 by substitution. Dense, this is 25 lines and $O(n^3)$, and it was the
@@ -557,10 +558,30 @@ case therefore degrades toward dense cost, which for the circuit sizes a
 
 \section{Device models}
 \label{sec:devices}
-\locbar{device models}{50 lines, budget 547 to 597}{547}{597}
+\locbar{device models}{64 lines, budget 550 to 614}{550}{614}
 
 This section holds the semiconductor mathematics: the diode evaluation,
 the junction limiting shared by diode and BJT, and the MOSFET square law.
+
+\begin{derivation}{the graded junction capacitance}
+The capacitor is charge based: the state variable is the charge, and the
+companion current over a step is $i = \frac{k}{h}(Q(v) - Q_{prev})$ with
+$k = 2$ for the trapezoidal rule and $k = 1$ for the damped restart
+steps, contributed with the conductance $\frac{k}{h} C(v)$. The graded
+junction has
+\[
+C(v) = C_{j0} \left(1 - \frac{v}{V_J}\right)^{-m}, \qquad
+Q(v) = \frac{C_{j0} V_J}{1 - m}
+       \left(1 - \left(1 - \frac{v}{V_J}\right)^{1 - m}\right),
+\]
+with $V_J = 1$\,V fixed. The expression diverges at $v = V_J$, so above
+$F_C V_J$ with $F_C = 0.5$ the capacitance continues as its first-order
+Taylor expansion and the charge as its integral, keeping both $C^1$.
+Setting $m = 0$ recovers $Q = Cv$, the plain linear capacitor, so one
+evaluation function serves both. A test biases a junction at
+$v = -3$\,V, where $(1 - v/V_J)^{-1/2} = \tfrac{1}{2}$ exactly, and
+checks that the AC corner frequency doubles.
+\end{derivation}
 
 \paragraph{Diode.}
 Shockley equation with emission coefficient $n$ and the global
@@ -683,7 +704,7 @@ parameter defaults and nothing anywhere else.
 
 \section{The solver}
 \label{sec:solver}
-\locbar{solver: assembly, Newton, operating point}{146 lines, budget 597 to 743}{597}{743}
+\locbar{solver: assembly, Newton, operating point}{147 lines, budget 614 to 761}{614}{761}
 
 \paragraph{Companion linearization.}
 A nonlinear device current $i(v)$ enters the linear system as its tangent
@@ -873,7 +894,7 @@ can converge to the wrong branch. A cross-coupled NMOS latch in the test
 suite exercises the path.
 
 \section{Output selection}
-\locbar{output}{26 lines, budget 743 to 769}{743}{769}
+\locbar{output}{26 lines, budget 761 to 787}{761}{787}
 
 Output columns are the node voltages in netlist order followed by the
 branch currents in device order, named \texttt{v(node)} and
@@ -884,7 +905,7 @@ every analysis row is then a gather over that index list.
 
 \section{Analyses}
 \label{sec:analyses}
-\locbar{analyses and main}{208 lines, budget 769 to 977}{769}{977}
+\locbar{analyses and main}{210 lines, budget 787 to 997}{787}{997}
 
 \paragraph{Operating point and DC sweep.}
 \texttt{.op} is one call into the operating point solver.
@@ -1003,9 +1024,9 @@ Frequencies sweep linearly or per decade
 phase.
 
 \section{Validation}
-\locbar{tests/cli.rs}{321 lines, 0 of 977: tests are free}{0}{0}
+\locbar{tests/cli.rs}{330 lines, 0 of 997: tests are free}{0}{0}
 
-The test suite is 22 integration tests that run the built binary on real
+The test suite is 23 integration tests that run the built binary on real
 netlists and parse its CSV. Tests do not count toward the budget, so
 robustness lives there, and the suite prefers references that are
 independent of the implementation: closed-form solutions, physical
@@ -1031,7 +1052,8 @@ test & reference \\
 \texttt{tran\_lte\_fast\_tau} & $\tau = \texttt{tstep}/10$, LTE control must resolve the edge \\
 \texttt{tran\_uic\_lc} & LC amplitude $i_0 \sqrt{L/C}$ from initial conditions \\
 \texttt{tran\_pwl} & pwl triangle tracked exactly at every output time \\
-\texttt{tran\_diode\_cap} & reverse diode \texttt{cjo} behaves as a linear RC \\
+\texttt{tran\_diode\_cap} & reverse diode \texttt{cjo} with $m{=}0$ as a linear RC \\
+\texttt{ac\_depletion\_cap} & graded junction: $C = C_{j0}/2$ at $v = -3$\,V \\
 \texttt{tran\_ring\_oscillator} & 3-stage CMOS ring with a stable period \\
 \texttt{tran\_lc\_energy} & no numerical damping over twenty periods \\
 \texttt{ac\_rc} & $1/\sqrt{2}$ magnitude and $-45^\circ$ at the corner \\
@@ -1064,7 +1086,6 @@ feature & why it lost & est. lines \\
 \texttt{.subckt} hierarchy & lost to the transistor models & $\sim$100 \\
 Markowitz ordering & netlist order suffices at this scale & $\sim$80 \\
 Gummel-Poon BJT & Ebers-Moll covers the teaching core & $\sim$80 \\
-nonlinear depletion capacitance & constant $C$ covers the teaching core & $\sim$40 \\
 noise analysis & needs the adjoint system & $\sim$80 \\
 \texttt{.param} expressions & a calculator is its own project & $\sim$60 \\
 temperature sweeps & $V_T$ is a constant, by choice & $\sim$25 \\
@@ -1094,8 +1115,8 @@ complete: MNA, sparse LU with partial pivoting, two Verilog-A style
 contribution primitives carrying all device stamps, Newton with pnjlim
 and both continuation fallbacks as data-driven homotopy paths,
 trapezoidal integration with LTE control, breakpoints and damped restart
-steps, junction and gate capacitances, small-signal AC, eleven device
-letters with three source waveforms, four analyses, model cards, initial
-conditions, and output selection. Twenty-three lines of headroom remain.
+steps, charge-based graded junction capacitances, small-signal AC, eleven
+device letters with three source waveforms, four analyses, model cards,
+initial conditions, and output selection. Three lines of headroom remain.
 
 \end{document}
