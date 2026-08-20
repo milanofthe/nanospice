@@ -58,8 +58,8 @@
 {\small\texttt{#1}\hfill #2}\\[4pt]
 \begin{tikzpicture}
 \pgfmathsetlengthmacro{\bw}{\linewidth-4pt}
-\fill[pattern=north east lines] (0,0) rectangle ({(#3/991)*\bw}, 4.5pt);
-\fill[black] ({(#3/991)*\bw},0) rectangle ({(#4/991)*\bw}, 4.5pt);
+\fill[pattern=north east lines] (0,0) rectangle ({(#3/986)*\bw}, 4.5pt);
+\fill[black] ({(#3/986)*\bw},0) rectangle ({(#4/986)*\bw}, 4.5pt);
 \draw[black, line width=0.4pt] (0,0) rectangle (\bw, 4.5pt);
 \end{tikzpicture}%
 \end{tcolorbox}\medskip}
@@ -107,13 +107,13 @@ code section & lines & cumulative \\
 \midrule
 constants, error and output plumbing & 23 & 23 \\
 numbers: \texttt{Num} trait, complex, unit suffixes & 78 & 101 \\
-circuit data model & 63 & 164 \\
-parser & 262 & 426 \\
-sparse LU and stamp helpers & 105 & 531 \\
-device models & 50 & 581 \\
-solver: assembly, Newton, operating point & 162 & 743 \\
-output selection & 31 & 774 \\
-analyses and main & 217 & 991 \\
+circuit data model & 65 & 166 \\
+parser & 266 & 432 \\
+sparse LU and stamp helpers & 113 & 545 \\
+device models & 50 & 595 \\
+solver: assembly, Newton, operating point & 142 & 737 \\
+output selection & 31 & 768 \\
+analyses and main & 218 & 986 \\
 \bottomrule
 \end{tabular}
 \caption{Line budget by code section, in file order.}
@@ -288,7 +288,7 @@ netlist containing a literal micro sign must produce \emph{bad number},
 not a crash.
 
 \section{The circuit data model}
-\locbar{circuit data model}{63 lines, budget 101 to 164}{101}{164}
+\locbar{circuit data model}{65 lines, budget 101 to 166}{101}{166}
 
 A circuit is four vectors: devices, their names, node names, and the
 requested analyses, plus the branch count. Devices are one enum:
@@ -332,7 +332,7 @@ wrapper and its pattern matching at every use site; NaN is unambiguous
 here because a NaN initial condition is meaningless anyway.
 
 \section{The parser}
-\locbar{parser}{262 lines, budget 164 to 426}{164}{426}
+\locbar{parser}{266 lines, budget 166 to 432}{166}{432}
 
 The parser is the largest section. Preprocessing
 runs once per line: strip trailing comments after \texttt{;}, lowercase,
@@ -366,9 +366,14 @@ let expand = |from: usize| -> Vec<&str> {
 \end{rust}
 
 Source specifications (\texttt{dc}, \texttt{ac}, \texttt{sin},
-\texttt{pulse}) are parsed by a small keyword machine that greedily
-collects the numeric tokens after each keyword; missing trailing
-parameters default to zero, matching SPICE. The \texttt{.print} card is
+\texttt{pulse}, \texttt{pwl}) are parsed by a small keyword machine that
+greedily collects the numeric tokens after each keyword; missing trailing
+parameters default to zero, matching SPICE. The pulse is not a waveform
+of its own: the parser turns it into a piecewise linear point list, the
+same representation the \texttt{pwl} source uses directly, so evaluation
+is one interpolation routine and the breakpoint scan of
+section~\ref{sec:analyses} reads the corner times straight from the
+points. The \texttt{.print} card is
 reconstructed from the parenthesis-stripped token stream: \texttt{v out}
 pairs back into \texttt{v(out)}, which works because every output column
 has exactly the form \texttt{kind(name)}.
@@ -386,7 +391,7 @@ models.
 \end{decision}
 
 \section{Sparse LU}
-\locbar{sparse LU}{105 lines, budget 426 to 531}{426}{531}
+\locbar{sparse LU}{113 lines, budget 432 to 545}{432}{545}
 
 Gaussian elimination factors $PA = LU$ with row pivoting and then solves
 by substitution. Dense, this is 25 lines and $O(n^3)$, and it was the
@@ -421,8 +426,9 @@ an \emph{if node is not ground} test inside every stamp, roughly two
 dozen branches across ten devices. One guard inside \texttt{add}
 replaces all of them, and $x_0 = 0$ is pinned after the solve. The
 conductance quad above also covers the VCCS (rows at the output nodes,
-columns at the controlling nodes), and \texttt{branch} covers V, L, and
-E, so the ten devices share two stamp helpers.
+columns at the controlling nodes), and \texttt{branch} writes the
+current column and voltage row of V, L, and E; every stamp in the file
+reduces to these two shapes.
 \end{decision}
 
 The third helper covers every nonlinear device in the file. A static
@@ -448,14 +454,22 @@ fn contrib(&mut self, p: usize, n: usize, i: T, ctl: &[(usize, usize, T)], x: &[
 }
 \end{rust}
 
-\begin{decision}{devices as contributions}
-The primitive replaced hand-written stamps: the diode is one contribution,
-the MOSFET one contribution with two controls, the BJT three
-contributions. The refactor removed 27 lines of stamp code for 10 lines
-of primitive, and the freed budget paid for the JFET
-(section~\ref{sec:devices}). Hand-derived Jacobian stamps, like the
-$3 \times 3$ BJT matrix in section~\ref{sec:solver}, become a
-verification artifact instead of code.
+A dual primitive covers the voltage-defined elements: \texttt{vcontrib}
+writes the branch row $v_p - v_n - \sum_k g_k (x_{a_k} - x_{b_k}) = v$,
+which is the VCVS with one control, the inductor companion with its own
+branch current as the control (the pair $(br, 0)$), and the plain voltage
+source with none.
+
+\begin{decision}{the whole device set on two primitives}
+Every device arm in the assembly is now one or a few primitive calls:
+R, C, I, G, diode, MOSFET, and JFET are current contributions
+(\texttt{contrib}), V, L, and E are voltage contributions
+(\texttt{vcontrib}), and the BJT is three current contributions. The
+hand-written stamps disappeared: the refactor removed more lines than the
+two primitives cost, and the freed budget paid for the JFET and the PWL
+source. Hand-derived Jacobian stamps, like the $3 \times 3$ BJT matrix
+in section~\ref{sec:solver}, become a verification artifact instead of
+code.
 \end{decision}
 
 \begin{derivation}{the first-entry invariant}
@@ -527,7 +541,7 @@ case therefore degrades toward dense cost, which for the circuit sizes a
 
 \section{Device models}
 \label{sec:devices}
-\locbar{device models}{50 lines, budget 531 to 581}{531}{581}
+\locbar{device models}{50 lines, budget 545 to 595}{545}{595}
 
 This section holds the semiconductor mathematics: the diode evaluation,
 the junction limiting shared by diode and BJT, and the MOSFET square law.
@@ -653,7 +667,7 @@ parameter defaults and nothing anywhere else.
 
 \section{The solver}
 \label{sec:solver}
-\locbar{solver: assembly, Newton, operating point}{162 lines, budget 581 to 743}{581}{743}
+\locbar{solver: assembly, Newton, operating point}{142 lines, budget 595 to 737}{595}{737}
 
 \paragraph{Companion linearization.}
 A nonlinear device current $i(v)$ enters the linear system as its tangent
@@ -817,21 +831,33 @@ detect active limiting; the flag makes it visible.
 When plain Newton fails, the operating point is found by continuation:
 replace the hard problem $F(x) = 0$ by a family $H(x, \lambda) = 0$ that
 is easy at $\lambda = 0$, coincides with $F$ at $\lambda = 1$, and is
-tracked by warm-started Newton solves along the path. Two standard
-families run in order. Gmin stepping puts a conductance $g$ across every
-junction and walks it from $10^{-2}$\,S down to $10^{-12}$\,S decade by
-decade: at large $g$ the circuit is nearly linear and Newton converges
-reliably.
-Source stepping scales every source value by $\lambda$ ramped from 0.1 to
-1.0: the zero-source circuit has the trivial solution $x = 0$, and each
-increment moves the solution a small, trackable distance. Gmin stepping
-handles floating-junction trouble; source stepping handles feedback and
-bistable topologies, where gmin stepping can converge to the wrong
-branch. Together they are the standard SPICE fallback chain, and a
-cross-coupled NMOS latch in the test suite exercises the path.
+tracked by warm-started Newton solves along the path. Both classic
+fallbacks are paths in the $(g_{min}, \text{source scale})$ plane, so the
+implementation is one loop over two lists of stages:
+
+\begin{rust}
+let gmin_path: Vec<(f64, f64)> = (2..=12).map(|k| (10f64.powi(-k), 1.0)).collect();
+let src_path: Vec<(f64, f64)> = (1..=10).map(|k| (GMIN, k as f64 / 10.0)).collect();
+for path in [gmin_path, src_path] {
+    // reset x and the limiter memory, then walk the stages warm started
+    if path.iter().all(|&(g, fac)| newton(ckt, x, lim, &Mode::Dc { fac }, g, ITL_OP).is_some()) {
+        return;
+    }
+}
+\end{rust}
+
+Gmin stepping walks a junction conductance from $10^{-2}$\,S down to
+$10^{-12}$\,S decade by decade: at large $g$ the circuit is nearly linear
+and Newton converges reliably. Source stepping scales every source value
+from 0.1 to 1.0: the zero-source circuit has the trivial solution
+$x = 0$, and each increment moves the solution a small, trackable
+distance. Gmin stepping handles floating-junction trouble; source
+stepping handles feedback and bistable topologies, where gmin stepping
+can converge to the wrong branch. A cross-coupled NMOS latch in the test
+suite exercises the path.
 
 \section{Output selection}
-\locbar{output}{31 lines, budget 743 to 774}{743}{774}
+\locbar{output}{31 lines, budget 737 to 768}{737}{768}
 
 Output columns are the node voltages in netlist order followed by the
 branch currents in device order, named \texttt{v(node)} and
@@ -842,7 +868,7 @@ every analysis row is then a gather over that index list.
 
 \section{Analyses}
 \label{sec:analyses}
-\locbar{analyses and main}{217 lines, budget 774 to 991}{774}{991}
+\locbar{analyses and main}{218 lines, budget 768 to 986}{768}{986}
 
 \paragraph{Operating point and DC sweep.}
 \texttt{.op} is one call into the operating point solver.
@@ -924,8 +950,8 @@ for $h/\tau = 0.1$: a factor-two error at the first point, and no
 smaller $h$ fixes the ratio, because the history term is wrong by
 construction. The LTE controller cannot see it either, since the
 predictor has no history yet. The classic remedy is exact rather than
-adaptive: every corner of every pulse source (delay, rise end, fall
-start, fall end, per period) is registered as a breakpoint, steps are
+adaptive: every point of every piecewise linear waveform (the pulse is
+parsed into its four corners) is registered as a breakpoint, steps are
 clamped to land on breakpoints exactly, and after crossing one the
 integrator restarts with a small step and cleared predictor history,
 because the waveform derivative is discontinuous there.
@@ -952,9 +978,9 @@ Frequencies sweep linearly or per decade
 phase.
 
 \section{Validation}
-\locbar{tests/cli.rs}{271 lines, 0 of 991: tests are free}{0}{0}
+\locbar{tests/cli.rs}{285 lines, 0 of 986: tests are free}{0}{0}
 
-The test suite is 19 integration tests that run the built binary on real
+The test suite is 20 integration tests that run the built binary on real
 netlists and parse its CSV. Tests do not count toward the budget, so
 robustness lives there, and the suite prefers references that are
 independent of the implementation: closed-form solutions, physical
@@ -979,6 +1005,7 @@ test & reference \\
 \texttt{tran\_rc}, \texttt{tran\_rl} & step responses vs. $1 - e^{-t/\tau}$ \\
 \texttt{tran\_lte\_fast\_tau} & $\tau = \texttt{tstep}/10$, LTE control must resolve the edge \\
 \texttt{tran\_uic\_lc} & LC amplitude $i_0 \sqrt{L/C}$ from initial conditions \\
+\texttt{tran\_pwl} & pwl triangle tracked exactly at every output time \\
 \texttt{tran\_lc\_energy} & no numerical damping over twenty periods \\
 \texttt{ac\_rc} & $1/\sqrt{2}$ magnitude and $-45^\circ$ at the corner \\
 \texttt{print\_selection} & column filtering \\
@@ -1036,12 +1063,13 @@ roughly halve the line count at a different performance class.
 
 \section{Closing}
 
-The final count is 991 of 1000 lines, with the classic algorithm set
-complete: MNA, sparse LU with partial pivoting, a Verilog-A style
-contribution primitive for the device stamps, Newton with pnjlim and both
-continuation fallbacks, trapezoidal integration with LTE control and
-breakpoints, small-signal AC, eleven device letters, four analyses, model
-cards, initial conditions, and output selection. Nine lines of headroom
-remain.
+The final count is 986 of 1000 lines, with the classic algorithm set
+complete: MNA, sparse LU with partial pivoting, two Verilog-A style
+contribution primitives carrying all device stamps, Newton with pnjlim
+and both continuation fallbacks as data-driven homotopy paths,
+trapezoidal integration with LTE control and breakpoints, small-signal
+AC, eleven device letters with three source waveforms, four analyses,
+model cards, initial conditions, and output selection. Fourteen lines of
+headroom remain.
 
 \end{document}
