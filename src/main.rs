@@ -136,6 +136,9 @@ const SUFFIXES: [(&str, f64); 9] = [
 
 fn num(tok: &str) -> Option<f64> {
     let t = tok.trim();
+    if !t.is_ascii() {
+        return None;
+    }
     let mut end = t.len();
     while end > 0 && t[..end].parse::<f64>().is_err() {
         end -= 1;
@@ -241,21 +244,21 @@ fn pval(toks: &[&str], key: &str, default: f64) -> f64 {
 // Source spec: bare value or dc/ac keywords plus sin(...)/pulse(...) waveforms.
 fn src_spec(toks: &[&str]) -> (f64, f64, Option<Wave>) {
     let (mut dc, mut ac, mut wave) = (0.0, 0.0, None);
+    let take = |i: &mut usize| -> Vec<f64> {
+        let mut v = Vec::new();
+        while *i < toks.len() {
+            match num(toks[*i]) {
+                Some(x) => {
+                    v.push(x);
+                    *i += 1;
+                }
+                None => break,
+            }
+        }
+        v
+    };
     let mut i = 0;
     while i < toks.len() {
-        let take = |i: &mut usize| -> Vec<f64> {
-            let mut v = Vec::new();
-            while *i < toks.len() {
-                match num(toks[*i]) {
-                    Some(x) => {
-                        v.push(x);
-                        *i += 1;
-                    }
-                    None => break,
-                }
-            }
-            v
-        };
         match toks[i] {
             "dc" => {
                 i += 1;
@@ -822,7 +825,11 @@ fn run_dc(ckt: &mut Circuit, src: &str, start: f64, stop: f64, step: f64) {
     for k in 0..=npts.max(0) {
         let val = start + step * k as f64;
         match &mut ckt.devs[di] {
-            Dev::V { dc, .. } | Dev::I { dc, .. } => *dc = val,
+            // the sweep owns the source: any transient wave is dropped
+            Dev::V { dc, wave, .. } | Dev::I { dc, wave, .. } => {
+                *dc = val;
+                *wave = None;
+            }
             _ => die(".dc sweep source must be a v or i source"),
         }
         op_solve(ckt, &mut x, &mut lim);

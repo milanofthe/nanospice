@@ -29,6 +29,7 @@ Devices:
 | `Ixxx p n ...` | current source, same spec as V |
 | `Dxxx p n [is=1e-14] [n=1]` | diode, Shockley |
 | `Mxxx d g s b nmos\|pmos [kp=2e-5] [vt0=0] [lambda=0]` | MOSFET level 1, bulk ignored, vt0 is the threshold magnitude for pmos too |
+| `Qxxx c b e npn\|pnp [is=1e-16] [bf=100] [br=1]` | BJT, Ebers-Moll transport model |
 | `Exxx p n cp cn gain` | VCVS |
 | `Gxxx p n cp cn gm` | VCCS |
 
@@ -61,7 +62,7 @@ in tens of milliseconds.
 
 ## Not supported
 
-Subcircuits, `.model` cards, `.param`, BJT, noise analysis, sparse matrices.
+Subcircuits, `.model` cards, `.param`, junction capacitances, noise analysis.
 That is the price of the budget.
 
 ## Examples and tests
