@@ -57,15 +57,9 @@ trait Num:
 }
 
 impl Num for f64 {
-    fn zero() -> f64 {
-        0.0
-    }
-    fn one() -> f64 {
-        1.0
-    }
-    fn mag(self) -> f64 {
-        self.abs()
-    }
+    fn zero() -> f64 { 0.0 }
+    fn one() -> f64 { 1.0 }
+    fn mag(self) -> f64 { self.abs() }
 }
 
 #[derive(Clone, Copy)]
@@ -75,30 +69,22 @@ struct Cx {
 }
 
 impl Cx {
-    fn new(re: f64, im: f64) -> Cx {
-        Cx { re, im }
-    }
+    fn new(re: f64, im: f64) -> Cx { Cx { re, im } }
 }
 
 impl std::ops::Add for Cx {
     type Output = Cx;
-    fn add(self, o: Cx) -> Cx {
-        Cx::new(self.re + o.re, self.im + o.im)
-    }
+    fn add(self, o: Cx) -> Cx { Cx::new(self.re + o.re, self.im + o.im) }
 }
 
 impl std::ops::Sub for Cx {
     type Output = Cx;
-    fn sub(self, o: Cx) -> Cx {
-        Cx::new(self.re - o.re, self.im - o.im)
-    }
+    fn sub(self, o: Cx) -> Cx { Cx::new(self.re - o.re, self.im - o.im) }
 }
 
 impl std::ops::Mul for Cx {
     type Output = Cx;
-    fn mul(self, o: Cx) -> Cx {
-        Cx::new(self.re * o.re - self.im * o.im, self.re * o.im + self.im * o.re)
-    }
+    fn mul(self, o: Cx) -> Cx { Cx::new(self.re * o.re - self.im * o.im, self.re * o.im + self.im * o.re) }
 }
 
 impl std::ops::Div for Cx {
@@ -110,15 +96,9 @@ impl std::ops::Div for Cx {
 }
 
 impl Num for Cx {
-    fn zero() -> Cx {
-        Cx::new(0.0, 0.0)
-    }
-    fn one() -> Cx {
-        Cx::new(1.0, 0.0)
-    }
-    fn mag(self) -> f64 {
-        self.re.hypot(self.im)
-    }
+    fn zero() -> Cx { Cx::new(0.0, 0.0) }
+    fn one() -> Cx { Cx::new(1.0, 0.0) }
+    fn mag(self) -> f64 { self.re.hypot(self.im) }
 }
 
 // SPICE number: longest parseable prefix plus unit suffix, e.g. 4.7k, 100n, 1meg.
@@ -563,7 +543,7 @@ fn merge<T: Num>(a: &[(usize, T)], p: &[(usize, T)], f: T) -> Vec<(usize, T)> {
     o
 }
 
-fn solve<T: Num>(mut s: Sys<T>) -> Option<Vec<T>> {
+fn solve<T: Num>(mut s: Sys<T>) -> Result<Vec<T>, usize> {
     let m = s.b.len();
     for k in 1..m {
         let (mut p, mut best) = (0, 0.0);
@@ -576,7 +556,7 @@ fn solve<T: Num>(mut s: Sys<T>) -> Option<Vec<T>> {
             }
         }
         if best < 1e-300 {
-            return None;
+            return Err(k);
         }
         s.rows.swap(k, p);
         s.b.swap(k, p);
@@ -600,7 +580,7 @@ fn solve<T: Num>(mut s: Sys<T>) -> Option<Vec<T>> {
         x[i] = sum / s.rows[i][0].1;
     }
     x[0] = T::zero();
-    Some(x)
+    Ok(x)
 }
 
 // ---------------------------------------------------------- device models ---
@@ -608,6 +588,15 @@ fn solve<T: Num>(mut s: Sys<T>) -> Option<Vec<T>> {
 fn diode_eval(vd: f64, is: f64, vt: f64, gmin: f64) -> (f64, f64) {
     let e = (vd / vt).min(200.0).exp();
     (is * (e - 1.0) + gmin * vd, is * e / vt + gmin)
+}
+
+// Limited junction voltage: pnjlim plus the bookkeeping shared by D and Q.
+fn junction(raw: f64, lim: &mut f64, vt: f64, is: f64, limited: &mut bool) -> f64 {
+    let vcrit = vt * (vt / (SQRT_2 * is)).ln();
+    let v = pnjlim(raw, *lim, vt, vcrit);
+    *limited |= (v - raw).abs() > VNTOL;
+    *lim = v;
+    v
 }
 
 // Classic SPICE junction voltage limiting.
@@ -659,13 +648,14 @@ fn mos_op(dv: &Dev, x: &[f64]) -> (usize, usize, f64, f64, f64) {
 // ----------------------------------------------------------------- solver ---
 
 enum Mode<'a> {
-    Dc,
+    Dc { fac: f64 },
     Tran { h: f64, t: f64, st: &'a [[f64; 2]] },
 }
 
 fn assemble(ckt: &Circuit, x: &[f64], lim: &mut [[f64; 2]], mode: &Mode, gmin: f64, limited: &mut bool) -> Sys<f64> {
     let mut s = Sys::new(ckt.nodes.len() + ckt.nb);
     let t_now = if let Mode::Tran { t, .. } = mode { *t } else { 0.0 };
+    let fac = if let Mode::Dc { fac } = mode { *fac } else { 1.0 };
     for (di, dv) in ckt.devs.iter().enumerate() {
         match dv {
             Dev::R { p, n, v } => s.quad(*p, *n, *p, *n, 1.0 / v),
@@ -688,19 +678,16 @@ fn assemble(ckt: &Circuit, x: &[f64], lim: &mut [[f64; 2]], mode: &Mode, gmin: f
             }
             Dev::V { p, n, dc, wave, br, .. } => {
                 s.branch(*p, *n, *br);
-                s.rhs(*br, wave_val(*dc, wave, t_now));
+                s.rhs(*br, fac * wave_val(*dc, wave, t_now));
             }
             Dev::I { p, n, dc, wave, .. } => {
-                let val = wave_val(*dc, wave, t_now);
+                let val = fac * wave_val(*dc, wave, t_now);
                 s.rhs(*p, -val);
                 s.rhs(*n, val);
             }
             Dev::D { p, n, is, nf } => {
                 let vt = nf * VT;
-                let vcrit = vt * (vt / (SQRT_2 * is)).ln();
-                let vd = pnjlim(x[*p] - x[*n], lim[di][0], vt, vcrit);
-                *limited |= (vd - (x[*p] - x[*n])).abs() > VNTOL;
-                lim[di][0] = vd;
+                let vd = junction(x[*p] - x[*n], &mut lim[di][0], vt, *is, limited);
                 let (id, gd) = diode_eval(vd, *is, vt, gmin);
                 s.quad(*p, *n, *p, *n, gd);
                 s.rhs(*p, gd * vd - id);
@@ -729,12 +716,8 @@ fn assemble(ckt: &Circuit, x: &[f64], lim: &mut [[f64; 2]], mode: &Mode, gmin: f
             // conductance stamps are sign free and only the rhs carries sg.
             Dev::Q { c, b, e, is, bf, br, pnp } => {
                 let sg = if *pnp { -1.0 } else { 1.0 };
-                let vcrit = VT * (VT / (SQRT_2 * is)).ln();
-                let vbe = pnjlim(sg * (x[*b] - x[*e]), lim[di][0], VT, vcrit);
-                let vbc = pnjlim(sg * (x[*b] - x[*c]), lim[di][1], VT, vcrit);
-                *limited |= (vbe - sg * (x[*b] - x[*e])).abs() > VNTOL;
-                *limited |= (vbc - sg * (x[*b] - x[*c])).abs() > VNTOL;
-                lim[di] = [vbe, vbc];
+                let vbe = junction(sg * (x[*b] - x[*e]), &mut lim[di][0], VT, *is, limited);
+                let vbc = junction(sg * (x[*b] - x[*c]), &mut lim[di][1], VT, *is, limited);
                 let ef = (vbe / VT).min(200.0).exp();
                 let er = (vbc / VT).min(200.0).exp();
                 let (gmf, gmr) = (is * ef / VT, is * er / VT);
@@ -760,6 +743,18 @@ fn assemble(ckt: &Circuit, x: &[f64], lim: &mut [[f64; 2]], mode: &Mode, gmin: f
     s
 }
 
+fn unk_name(ckt: &Circuit, i: usize) -> String {
+    if i < ckt.nodes.len() {
+        return format!("node {}", ckt.nodes[i]);
+    }
+    let mut branches =
+        ckt.devs.iter().zip(&ckt.names).filter(|(d, _)| matches!(d, Dev::L { .. } | Dev::V { .. } | Dev::E { .. }));
+    match branches.nth(i - ckt.nodes.len()) {
+        Some((_, n)) => format!("branch {}", n),
+        None => format!("unknown {}", i),
+    }
+}
+
 fn tolv(i: usize, nn: usize, a: f64, b: f64) -> f64 {
     (if i < nn { VNTOL } else { ABSTOL }) + RELTOL * a.abs().max(b.abs())
 }
@@ -771,7 +766,8 @@ fn newton(ckt: &Circuit, x: &mut Vec<f64>, lim: &mut [[f64; 2]], mode: &Mode, gm
         // otherwise a clamped junction looks like a converged solution
         let mut limited = false;
         let s = assemble(ckt, x, lim, mode, gmin, &mut limited);
-        let xn = solve(s)?;
+        let xn =
+            solve(s).unwrap_or_else(|k| die(&format!("singular matrix at {}, no conduction path?", unk_name(ckt, k))));
         let conv = (1..xn.len()).all(|i| (xn[i] - x[i]).abs() <= tolv(i, nn, xn[i], x[i]));
         *x = xn;
         if conv && !limited && it > 1 {
@@ -782,20 +778,30 @@ fn newton(ckt: &Circuit, x: &mut Vec<f64>, lim: &mut [[f64; 2]], mode: &Mode, gm
 }
 
 fn op_solve(ckt: &Circuit, x: &mut Vec<f64>, lim: &mut [[f64; 2]]) {
-    if newton(ckt, x, lim, &Mode::Dc, GMIN, ITL_OP).is_some() {
+    let dc = Mode::Dc { fac: 1.0 };
+    if newton(ckt, x, lim, &dc, GMIN, ITL_OP).is_some() {
         return;
     }
-    x.iter_mut().for_each(|v| *v = 0.0);
-    lim.iter_mut().for_each(|v| *v = [0.0; 2]);
-    let mut g = 1e-2;
-    while g > GMIN {
-        if newton(ckt, x, lim, &Mode::Dc, g, ITL_OP).is_none() {
-            die("operating point did not converge (gmin stepping failed, floating node?)");
-        }
+    let reset = |x: &mut Vec<f64>, lim: &mut [[f64; 2]]| {
+        x.iter_mut().for_each(|v| *v = 0.0);
+        lim.iter_mut().for_each(|v| *v = [0.0; 2]);
+    };
+    // first fallback: gmin stepping
+    reset(x, lim);
+    let (mut g, mut ok) = (1e-2, true);
+    while ok && g > GMIN {
+        ok = newton(ckt, x, lim, &dc, g, ITL_OP).is_some();
         g /= 10.0;
     }
-    if newton(ckt, x, lim, &Mode::Dc, GMIN, ITL_OP).is_none() {
-        die("operating point did not converge");
+    if ok && newton(ckt, x, lim, &dc, GMIN, ITL_OP).is_some() {
+        return;
+    }
+    // second fallback: source stepping, ramp all sources up with warm starts
+    reset(x, lim);
+    for k in 1..=10 {
+        if newton(ckt, x, lim, &Mode::Dc { fac: k as f64 / 10.0 }, GMIN, ITL_OP).is_none() {
+            die("operating point did not converge (gmin and source stepping failed)");
+        }
     }
 }
 
@@ -1035,7 +1041,7 @@ fn run_ac(ckt: &Circuit, dec: bool, n: usize, f1: f64, f2: f64) {
     }
     let (m, x, mut lim) = op_setup(ckt);
     // The real part of the AC matrix is exactly the DC Jacobian at the OP.
-    let sdc = assemble(ckt, &x, &mut lim, &Mode::Dc, GMIN, &mut false);
+    let sdc = assemble(ckt, &x, &mut lim, &Mode::Dc { fac: 1.0 }, GMIN, &mut false);
     let mut freqs = Vec::new();
     if dec {
         let mut k = 0;
@@ -1079,7 +1085,8 @@ fn run_ac(ckt: &Circuit, dec: bool, n: usize, f1: f64, f2: f64) {
                 _ => {}
             }
         }
-        let xa = solve(sc).unwrap_or_else(|| die("singular matrix in .ac"));
+        let xa = solve(sc)
+            .unwrap_or_else(|k| die(&format!("singular matrix in .ac at {}", unk_name(ckt, k))));
         let mut row = vec![f];
         for &i in &idx {
             row.push(xa[i].mag());
