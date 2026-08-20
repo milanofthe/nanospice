@@ -1,15 +1,16 @@
 \documentclass[11pt]{article}
 
-\usepackage[a4paper, margin=28mm]{geometry}
+\usepackage[a4paper, margin=26mm]{geometry}
 \usepackage{amsmath, amssymb}
 \usepackage{booktabs}
 \usepackage{xcolor}
 \usepackage{listings}
+\usepackage[most]{tcolorbox}
+\usepackage{titlesec}
 \usepackage{microtype}
 \usepackage[hidelinks]{hyperref}
 
-\definecolor{codegray}{gray}{0.45}
-\definecolor{rulegray}{gray}{0.75}
+% ---------------------------------------------------------------- style ----
 
 \lstdefinelanguage{Rust}{
   keywords={fn, let, mut, if, else, while, for, in, match, return, struct,
@@ -19,24 +20,48 @@
   comment=[l]{//},
   string=[b]",
 }
-\lstset{
-  language=Rust,
-  basicstyle=\small\ttfamily,
-  commentstyle=\color{codegray}\itshape,
-  keywordstyle=\bfseries,
-  columns=fullflexible,
-  keepspaces=true,
-  breaklines=true,
-  frame=leftline,
-  rulecolor=\color{rulegray},
-  framesep=8pt,
-  xleftmargin=12pt,
-  aboveskip=10pt,
-  belowskip=10pt,
-}
 
-% loc counter shown under each section heading: \loc{section name}{lines}{cumulative}
-\newcommand{\loc}[3]{\noindent{\small\color{codegray}\texttt{#1}: #2 lines, running total #3 of 999}\par\medskip}
+\titleformat{\section}{\Large\bfseries}{\thesection}{0.8em}{}[{\vspace{1pt}\titlerule[0.5pt]}]
+\titlespacing*{\section}{0pt}{26pt}{12pt}
+
+% code tile
+\newtcblisting{rust}{listing only, breakable, colback=gray!4, colframe=gray!45,
+  boxrule=0.4pt, arc=1pt, left=6pt, right=4pt, top=3pt, bottom=3pt,
+  listing options={language=Rust, basicstyle=\small\ttfamily,
+  commentstyle=\color{black!55}\itshape, keywordstyle=\bfseries,
+  columns=fullflexible, keepspaces=true, breaklines=true}}
+
+% derivation tile
+\newtcolorbox{derivation}[1]{breakable, colback=gray!5, colframe=gray!50,
+  colbacktitle=gray!16, coltitle=black, fonttitle=\bfseries\small,
+  title={Derivation: #1}, boxrule=0.5pt, arc=1.5pt,
+  left=7pt, right=7pt, top=5pt, bottom=6pt}
+
+% design decision tile
+\newtcolorbox{decision}[1]{breakable, colback=white, colframe=black!60,
+  colbacktitle=black!10, coltitle=black, fonttitle=\bfseries\small,
+  title={Design decision: #1}, boxrule=0.6pt, arc=1.5pt,
+  left=7pt, right=7pt, top=5pt, bottom=6pt}
+
+% field note tile (things that went wrong and what they taught)
+\newtcolorbox{fieldnote}[1]{breakable, colback=gray!9, colframe=black!70,
+  colbacktitle=gray!25, coltitle=black, fonttitle=\bfseries\small,
+  title={Field note: #1}, boxrule=0.6pt, arc=1.5pt,
+  left=7pt, right=7pt, top=5pt, bottom=6pt}
+
+% loc tile: code section name, label, budget range [start, end] of 999
+\newcommand{\locbar}[4]{%
+\begin{tcolorbox}[colback=gray!7, colframe=gray!50, boxrule=0.4pt, arc=1.5pt,
+  left=7pt, right=7pt, top=4pt, bottom=6pt]
+{\small\texttt{#1}\hfill #2}\\[4pt]
+\begin{tikzpicture}
+\pgfmathsetlengthmacro{\bw}{\linewidth-4pt}
+\fill[gray!22] (0,0) rectangle (\bw, 4.5pt);
+\fill[gray!45] (0,0) rectangle ({(#3/999)*\bw}, 4.5pt);
+\fill[black!75] ({(#3/999)*\bw},0) rectangle ({(#4/999)*\bw}, 4.5pt);
+\draw[gray!60, line width=0.3pt] (0,0) rectangle (\bw, 4.5pt);
+\end{tikzpicture}%
+\end{tcolorbox}\medskip}
 
 \title{\textbf{nanospice}\\[4pt]\large A SPICE circuit simulator in 1000 lines of Rust}
 \author{Milan Rother}
@@ -49,13 +74,14 @@
 \noindent
 nanospice is a circuit simulator with the classic Berkeley SPICE algorithm
 set: modified nodal analysis, Newton-Raphson with junction limiting and two
-operating point fallbacks, trapezoidal transient integration with local
-truncation error timestep control, and small-signal AC analysis. The entire
-solver lives in one Rust source file of at most 1000 nonblank, noncomment
-lines, enforced by a test, with no dependencies outside the standard
-library. This report derives each algorithm, explains the design decisions
-the budget forced, and maps both to the code. Each section header states how
-many of the 999 lines the corresponding code section spends.
+operating point fallbacks, sparse LU factorization, trapezoidal transient
+integration with local truncation error timestep control, and small-signal
+AC analysis. The entire solver lives in one Rust source file of at most
+1000 nonblank, noncomment lines, enforced by a test, with no dependencies
+outside the standard library. This report walks through the file in order,
+derives each algorithm, and explains the design decisions the budget
+forced. The bar under each section heading shows where that code section
+sits in the 999-line budget.
 \end{abstract}
 
 \section{The budget as a design tool}
@@ -63,20 +89,21 @@ many of the 999 lines the corresponding code section spends.
 The rule: one file, \texttt{src/main.rs}, at most 1000 lines after removing
 blank lines and comments, standard library only. A test reads the file,
 counts, and fails the build above the limit. Tests, example netlists, and
-comments are free. The point of the rule is not minimalism for its own sake.
-A hard budget forces every feature to displace another, which makes the cost
-of each decision explicit, and it keeps the whole simulator readable in one
-sitting, which is the educational goal of the repository.
+comments are free. The point of the rule is not minimalism for its own
+sake. A hard budget forces every feature to displace another, which makes
+the cost of each decision explicit, and it keeps the whole simulator
+readable in one sitting, which is the educational goal of the repository.
 
-Table~\ref{tab:budget} shows where the lines go. The parser is the largest
-consumer, which is typical: the numerics of a circuit simulator are compact,
-the input format is not.
+This report follows the source file from top to bottom. Every section of
+the report corresponds to a section of the file, marked by the same name
+the code uses in its section comments, and carries a bar showing which
+slice of the budget it occupies. Table~\ref{tab:budget} is the overview.
 
 \begin{table}[h]
 \centering
 \begin{tabular}{lrr}
 \toprule
-section & lines & cumulative \\
+code section & lines & cumulative \\
 \midrule
 constants, error and output plumbing & 23 & 23 \\
 numbers: \texttt{Num} trait, complex, unit suffixes & 78 & 101 \\
@@ -93,30 +120,285 @@ analyses and main & 217 & 999 \\
 \label{tab:budget}
 \end{table}
 
+The parser is the largest consumer, which is typical for the genre: the
+numerics of a circuit simulator are compact, the input format is not.
 Everything the budget excluded is listed with reasons in
 section~\ref{sec:cuts}.
 
-\section{Modified nodal analysis}
-\loc{solver, shared with sections 4 and 5}{179}{751}
+\section{Background: modified nodal analysis}
+\locbar{theory only}{0 lines}{0}{0}
 
-The unknown vector stacks the node voltages and one branch current for every
-voltage-defined element:
-\[
-x = (v_1, \dots, v_N,\; i_1, \dots, i_B)^T ,
-\]
-where the branches belong to voltage sources, inductors, and VCVS elements.
-Kirchhoff's current law gives one equation per node; each voltage-defined
-element adds one equation of the form $v_p - v_n = E$ and contributes its
-current $\pm i$ to the node equations. A two-terminal conductance $g$
-between nodes $p$ and $n$ stamps the familiar quad
-\[
-\begin{pmatrix} +g & -g \\ -g & +g \end{pmatrix}
-\]
-into rows and columns $(p, n)$. A VCCS is the same quad with the rows taken
-at the output nodes and the columns at the controlling nodes, so one helper
-covers both:
+Everything downstream assembles one linear system per Newton iteration, so
+the formulation comes first. Plain nodal analysis writes Kirchhoff's
+current law at every node except ground: the sum of currents leaving each
+node is zero. A conductance $g$ between nodes $p$ and $n$ carries the
+current $g(v_p - v_n)$, and collecting terms produces the node conductance
+matrix. The formulation breaks on ideal voltage sources: a voltage source
+has no admittance description, its current is whatever the circuit demands.
 
-\begin{lstlisting}
+Modified nodal analysis (MNA) repairs this by promoting that current to an
+unknown. The vector of unknowns becomes
+\[
+x = (v_1, \dots, v_N,\; i_1, \dots, i_B)^T,
+\]
+with one branch current for every voltage-defined element: independent
+voltage sources, inductors (which are voltage-defined in DC, where they are
+shorts), and voltage-controlled voltage sources. Each such element
+contributes its current $\pm i_b$ to the KCL rows of its two terminal nodes
+and adds one constraint row of the form $v_p - v_n = E$.
+
+A concrete example, the resistive divider used in the first integration
+test: a 10\,V source into two 1\,k$\Omega$ resistors,
+$g = 10^{-3}\,\text{S}$,
+\[
+\begin{pmatrix}
+g & -g & 1 \\
+-g & 2g & 0 \\
+1 & 0 & 0
+\end{pmatrix}
+\begin{pmatrix} v_1 \\ v_2 \\ i \end{pmatrix}
+=
+\begin{pmatrix} 0 \\ 0 \\ 10 \end{pmatrix}
+\quad\Longrightarrow\quad
+v_1 = 10, \;\; v_2 = 5, \;\; i = -5\,\text{mA}.
+\]
+Two properties matter later. First, the third diagonal entry is a
+structural zero: any LU factorization of an MNA matrix needs row pivoting.
+Second, $i$ comes out negative because the branch current is defined
+flowing into the positive terminal, the SPICE convention: a supply that
+delivers power reads negative.
+
+Nonlinear devices fit the same frame through linearization, covered in
+section~\ref{sec:solver}; reactive devices fit through companion models,
+also there. The result is that one matrix assembly routine serves DC,
+transient, and AC analysis.
+
+\section{Constants and plumbing}
+\locbar{constants, error and output plumbing}{23 lines, budget 0 to 23}{0}{23}
+
+The file opens with the numerical constants, all of them SPICE2 heritage:
+
+\begin{center}
+\small
+\begin{tabular}{llp{8.2cm}}
+\toprule
+constant & value & meaning \\
+\midrule
+\texttt{GMIN} & $10^{-12}$\,S & conductance in parallel with every junction \\
+\texttt{RELTOL} & $10^{-3}$ & relative convergence tolerance \\
+\texttt{VNTOL} & $1\,\mu$V & absolute floor for voltage convergence \\
+\texttt{ABSTOL} & $1$\,pA & absolute floor for current convergence \\
+\texttt{TRTOL} & 7 & slack factor on the truncation error estimate \\
+\texttt{VT} & $25.85$\,mV & thermal voltage $kT/q$ at $27\,^\circ$C \\
+\texttt{ITL\_OP} & 100 & Newton iteration limit, operating point \\
+\texttt{ITL\_TRAN} & 10 & Newton iteration limit per transient step \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+The two-part tolerance $\text{tol} = \tau + \text{RELTOL}\cdot|x|$ appears
+in both the Newton test and the timestep control. The relative part scales
+with signal amplitude; the absolute floor $\tau$ (VNTOL for voltages,
+ABSTOL for currents) keeps nodes that sit near zero from demanding
+impossible precision. TRTOL exists because the truncation error estimate
+is conservative; SPICE2 shipped the value 7 and it survived four decades of
+scrutiny.
+
+The remaining plumbing is a \texttt{die} helper that prints to stderr and
+exits, and an \texttt{out!} macro for stdout that exits quietly when the
+pipe closes. The macro exists because of a Unix detail: Rust ignores
+SIGPIPE, so a plain \texttt{println!} panics with a backtrace when the
+output is piped into \texttt{head}. A CLI that prints CSV must survive
+its consumers hanging up.
+
+\section{Numbers}
+\locbar{numbers}{78 lines, budget 23 to 101}{23}{101}
+
+AC analysis needs complex arithmetic and the standard library does not
+provide it. Rather than duplicating the linear solver for \texttt{f64} and
+a complex type, everything numeric is generic over a three-method trait:
+
+\begin{rust}
+trait Num:
+    Copy
+    + std::ops::Add<Output = Self>
+    + std::ops::Sub<Output = Self>
+    + std::ops::Mul<Output = Self>
+    + std::ops::Div<Output = Self>
+{
+    fn zero() -> Self;
+    fn one() -> Self;
+    fn mag(self) -> f64;
+}
+\end{rust}
+
+\texttt{mag} is the pivoting magnitude: absolute value for reals, modulus
+for complex. The complex type \texttt{Cx} implements the four operator
+traits in the obvious way; division uses the textbook formula
+\[
+\frac{a + jb}{c + jd} = \frac{(ac + bd) + j(bc - ad)}{c^2 + d^2},
+\]
+which is numerically adequate here because AC matrices of moderate size do
+not produce the extreme exponent spreads that would call for Smith's
+algorithm.
+
+\begin{decision}{one generic solver instead of two copies}
+The trait plus the operator implementations cost about 45 lines. Two
+copies of the sparse factorization would cost about 55 and, worse, could
+drift apart silently. The generic version also forces the pivoting
+strategy to be expressed once, through \texttt{mag}, instead of being
+duplicated with a subtle difference. This is the entire price Rust
+charges for not shipping a complex type in std.
+\end{decision}
+
+The section closes with the SPICE number grammar: the longest prefix of a
+token that parses as a float, followed by a unit suffix from
+$\{\texttt{t}, \texttt{g}, \texttt{meg}, \texttt{k}, \texttt{m},
+\texttt{u}, \texttt{n}, \texttt{p}, \texttt{f}\}$. The implementation
+shortens the token until \texttt{str::parse} succeeds, then looks the
+remainder up in a table ordered so that \texttt{meg} matches before
+\texttt{m}:
+
+\begin{rust}
+fn num(tok: &str) -> Option<f64> {
+    let t = tok.trim();
+    if !t.is_ascii() {
+        return None;
+    }
+    let mut end = t.len();
+    while end > 0 && t[..end].parse::<f64>().is_err() {
+        end -= 1;
+    }
+    if end == 0 {
+        return None;
+    }
+    let v: f64 = t[..end].parse().unwrap();
+    let mult = SUFFIXES.iter().find(|(s, _)| t[end..].starts_with(s)).map_or(1.0, |(_, m)| *m);
+    Some(v * mult)
+}
+\end{rust}
+
+The ASCII guard is a bug fix with a fuzz test behind it: Rust string
+slicing is byte-indexed and panics inside a multibyte character, so a
+netlist containing a literal micro sign must produce \emph{bad number},
+not a crash.
+
+\section{The circuit data model}
+\locbar{circuit data model}{63 lines, budget 101 to 164}{101}{164}
+
+A circuit is four vectors: devices, their names, node names, and the
+requested analyses, plus the branch count. Devices are one enum:
+
+\begin{rust}
+enum Dev {
+    R { p: usize, n: usize, v: f64 },
+    C { p: usize, n: usize, v: f64, ic: f64 },
+    L { p: usize, n: usize, v: f64, br: usize, ic: f64 },
+    V { p: usize, n: usize, dc: f64, ac: f64, wave: Option<Wave>, br: usize },
+    I { p: usize, n: usize, dc: f64, ac: f64, wave: Option<Wave> },
+    D { p: usize, n: usize, is: f64, nf: f64 },
+    M { d: usize, g: usize, s: usize, kp: f64, vt0: f64, lambda: f64, pmos: bool },
+    E { p: usize, n: usize, cp: usize, cn: usize, k: f64, br: usize },
+    G { p: usize, n: usize, cp: usize, cn: usize, k: f64 },
+    Q { c: usize, b: usize, e: usize, is: f64, bf: f64, br: f64, pnp: bool },
+}
+\end{rust}
+
+\begin{decision}{an enum, not a device trait}
+The object-oriented reflex is a \texttt{Device} trait with a
+\texttt{stamp} method per implementation. In Rust that costs a trait
+definition, one \texttt{impl} block per device with repeated method
+signatures, and dynamic dispatch or generics plumbing. The enum costs one
+declaration and a \texttt{match} arm per device at each use site, and the
+compiler checks exhaustively that no device is forgotten in any of them:
+assembly, output naming, breakpoint collection, state initialization.
+Three bugs were caught at compile time this way while features were added.
+For a closed set of ten devices, the enum wins on every axis that matters
+here.
+\end{decision}
+
+Source waveforms are a second enum with the standard SPICE semantics. The
+damped sine, for $t \ge t_d$:
+\[
+v(t) = v_o + v_a\, e^{-\theta (t - t_d)} \sin\bigl(2\pi f (t - t_d)\bigr),
+\]
+and the trapezoidal pulse, piecewise linear through delay, rise, on, fall,
+off, optionally periodic. Initial conditions on C and L use \texttt{f64::NAN}
+as the \emph{not specified} sentinel, which saves an \texttt{Option}
+wrapper and its pattern matching at every use site; NaN is unambiguous
+here because a NaN initial condition is meaningless anyway.
+
+\section{The parser}
+\locbar{parser}{262 lines, budget 164 to 426}{164}{426}
+
+The parser is the largest section and the least glamorous. Preprocessing
+runs once per line: strip trailing comments after \texttt{;}, lowercase,
+replace parentheses and commas by spaces, then apply the line discipline.
+The first line of the file is a title, \texttt{*} starts a comment line,
+and \texttt{+} splices a continuation onto the previous line. Replacing
+the parentheses early means \texttt{sin(0 1 1k)} and \texttt{sin 0 1 1k}
+tokenize identically, and no grammar for balanced parentheses exists
+anywhere in the program.
+
+Model cards are collected in a prepass over all lines so that
+\texttt{.model} may appear anywhere in the deck, before or after the
+devices that reference it. When a device line references a model, the
+model's parameter tokens are spliced \emph{behind} the inline tokens of
+the line. Parameter lookup returns the first match, so instance parameters
+override model parameters by construction, with no explicit precedence
+logic:
+
+\begin{rust}
+let expand = |from: usize| -> Vec<&str> {
+    let (mut inline, mut modt) = (Vec::new(), Vec::new());
+    for t in toks.iter().skip(from) {
+        match models.get(*t) {
+            Some(mt) => modt.extend(mt.iter().map(|s| s.as_str())),
+            None => inline.push(*t),
+        }
+    }
+    inline.extend(modt);
+    inline
+};
+\end{rust}
+
+Source specifications (\texttt{dc}, \texttt{ac}, \texttt{sin},
+\texttt{pulse}) are parsed by a small keyword machine that greedily
+collects the numeric tokens after each keyword; missing trailing
+parameters default to zero, matching SPICE. The \texttt{.print} card is
+reconstructed from the parenthesis-stripped token stream: \texttt{v out}
+pairs back into \texttt{v(out)}, which works because every output column
+has exactly the form \texttt{kind(name)}.
+
+Errors go through \texttt{die} with a named message: unknown device
+letters, unparseable numbers, missing tokens, unknown sweep sources. A
+fuzz test feeds seven classes of malformed netlist to the binary and
+requires a clean named error and no panic for each.
+
+\begin{decision}{no subcircuits}
+\texttt{.subckt} costs roughly a hundred lines of name spacing, port
+mapping, and flattening, and it is the single most requested feature of
+any SPICE clone, because real decks are hierarchical. It lost the budget
+fight against the transistor models: a simulator that cannot bias a
+transistor teaches less than one that cannot flatten a hierarchy. This is
+the cut that hurts most.
+\end{decision}
+
+\section{Sparse LU}
+\locbar{sparse LU}{96 lines, budget 426 to 522}{426}{522}
+
+Gaussian elimination factors $PA = LU$ with row pivoting and then solves
+by substitution. Dense, this is 25 lines and $O(n^3)$, and it was the
+first implementation, replaced wholesale once the test suite could pin the
+behavior. The budget does not permit a real sparse package with
+fill-reducing ordering, but it does permit the following 96-line design.
+
+The matrix rows live in the \texttt{Sys} struct as vectors of
+$(\text{column}, \text{value})$ pairs kept sorted by column, and the
+stamp helpers write into them; the ground row and column, index 0, are
+silently dropped at insertion:
+
+\begin{rust}
 fn quad(&mut self, p: usize, n: usize, cp: usize, cn: usize, g: T) {
     self.add(p, cp, g);
     self.add(p, cn, T::zero() - g);
@@ -129,42 +411,41 @@ fn branch(&mut self, p: usize, n: usize, br: usize) {
     self.add(br, p, T::one());
     self.add(br, n, T::zero() - T::one());
 }
-\end{lstlisting}
+\end{rust}
 
-\paragraph{The ground row.}
-Ground is unknown index 0, and it is a dummy: \texttt{add} silently drops
-any entry with a row or column index of 0, and the solver loops start at
-index 1 with $x_0 = 0$ pinned. The alternative is the usual
-\emph{if node is not ground} test inside every stamp, roughly two dozen
-branches across the device set. Spending one guard inside \texttt{add}
-instead of one per stamp is the kind of trade the budget rewards, and it
-also removes a class of copy-paste bugs.
+\begin{decision}{a dummy ground row}
+Ground is unknown 0 and the solver loops start at 1. The alternative is
+an \emph{if node is not ground} test inside every stamp, roughly two
+dozen branches across ten devices, each a copy-paste bug waiting to
+happen. One guard inside \texttt{add} replaces all of them, and
+$x_0 = 0$ is pinned after the solve. The conductance quad above also
+covers the VCCS (rows at the output nodes, columns at the controlling
+nodes), and \texttt{branch} covers V, L, and E, so the ten devices share
+two stamp helpers.
+\end{decision}
 
-\section{Sparse LU}
-\loc{sparse LU}{96}{522}
+\begin{derivation}{the first-entry invariant}
+The factorization maintains: \emph{before elimination step $k$, every row
+stored at index $i \ge k$ contains only columns $\ge k$.}
 
-Dense LU with partial pivoting is about 25 lines and was the first
-implementation. It is $O(n^3)$, which caps practical circuits at a few
-hundred nodes. The replacement is a genuinely sparse LU in 96 lines,
-including the generic data structure.
+Base case: column 0 is never stored, so before step 1 all rows hold
+columns $\ge 1$. Step: at step $k$ the rows at indices $> k$ that contain
+column $k$ have it eliminated, and the elimination removes that entry
+from the row; rows without column $k$ are untouched. Afterwards every row
+at index $> k$ holds only columns $\ge k+1$. $\square$
 
-Each matrix row is a vector of $(\text{column}, \text{value})$ pairs kept
-sorted by column. The factorization maintains one invariant:
+The consequence carries the whole design: if a row at index $i \ge k$ has
+an entry in column $k$ at all, that entry is the \emph{first} element of
+its sorted vector. Pivot search over column $k$ reduces to comparing the
+first elements of the candidate rows, an $O(1)$ probe per row instead of
+a search, with no column-linked index structure to maintain.
+\end{derivation}
 
-\begin{quote}
-Before elimination step $k$, every row stored at index $i \ge k$ contains
-only columns $\ge k$.
-\end{quote}
+The row update against the pivot row is a merge of two sorted sequences.
+Fill-in, the entries that appear where the original matrix had none, falls
+out of the merge automatically as the union of the two column sets:
 
-The invariant holds initially because column 0 is never stored, and step
-$k$ preserves it because eliminating column $k$ from a row removes that
-entry. Its consequence is the whole design: if a row at index $i \ge k$ has
-an entry in column $k$ at all, that entry is the \emph{first} element of its
-vector. Pivot search reduces to scanning first elements, and the update of a
-row against the pivot row is a merge of two sorted sequences in which
-fill-in appears automatically as the union of the column sets:
-
-\begin{lstlisting}
+\begin{rust}
 // row a minus f times pivot row p, both sorted
 fn merge<T: Num>(a: &[(usize, T)], p: &[(usize, T)], f: T) -> Vec<(usize, T)> {
     let mut o = Vec::with_capacity(a.len() + p.len());
@@ -188,52 +469,74 @@ fn merge<T: Num>(a: &[(usize, T)], p: &[(usize, T)], f: T) -> Vec<(usize, T)> {
     }
     o
 }
-\end{lstlisting}
+\end{rust}
 
-Pivoting is by largest magnitude among the candidate first entries, with
-rows swapped whole. MNA needs this: the constraint row of a voltage source
-has a structural zero on the diagonal, so factorization without row
-exchanges fails on essentially every netlist. If no candidate exists the
-trailing matrix has an empty column and the matrix is singular; the failing
-column index is returned and the error message names the node or branch,
-which turns the most common user error, a node with no DC path, into a
-self-explaining diagnostic.
+Pivoting selects the largest \texttt{mag} among the candidate first
+entries and swaps rows whole. MNA makes pivoting mandatory, not optional:
+the constraint row of every voltage source has a structural zero on the
+diagonal, visible in the divider example of section 2, so a factorization
+without row exchanges fails on essentially every netlist. If no candidate
+entry exists for column $k$, the trailing submatrix has an empty column
+and is singular; the factorization returns the failing column index and
+the caller maps it to a node or branch name. The most common user error,
+a node with no DC path to ground, produces
+\emph{singular matrix at node b, no conduction path?} instead of a
+generic failure.
 
-What is missing, deliberately, is fill-reducing ordering. Real SPICE uses
-Markowitz ordering; here the elimination order is netlist order, and the
-worst case degrades toward dense cost. For tree-like and ladder-like
-circuits, which is what a 1000-line simulator will realistically see, the
-netlist order is close to optimal anyway: a 2000-node RC ladder solves its
-operating point plus an AC sweep in tens of milliseconds.
+The cost of an elimination step is the sum of the lengths of the merged
+rows, so the total factorization cost is proportional to the fill-in it
+creates. For ladder and tree topologies, elimination in netlist order
+creates none: a 30-stage randomized ladder factors in linear time, and a
+2000-node RC ladder solves its operating point plus an AC sweep in tens of
+milliseconds. The deliberate omission is Markowitz ordering; the worst
+case therefore degrades toward dense cost, which for the circuit sizes a
+1000-line simulator will realistically see is the right trade.
 
-\section{Newton-Raphson and the operating point}
-\loc{device models, plus the solver drivers}{50}{572}
+\section{Device models}
+\locbar{device models}{50 lines, budget 522 to 572}{522}{572}
 
-Nonlinear devices enter the linear system through companion linearization.
-A device current $i(v)$ is replaced at the current iterate $v^{(k)}$ by
+This section holds the semiconductor mathematics: the diode evaluation,
+the junction limiting shared by diode and BJT, and the MOSFET square law.
+
+\paragraph{Diode.}
+Shockley equation with emission coefficient $n$ and the global
+$g_{min}$ in parallel:
 \[
-i \approx g\, v + I_{eq}, \qquad
-g = \left.\frac{\partial i}{\partial v}\right|_{v^{(k)}}, \qquad
-I_{eq} = i(v^{(k)}) - g\, v^{(k)},
+i = I_S \bigl( e^{v/nV_T} - 1 \bigr) + g_{min} v, \qquad
+g_d = \frac{I_S}{nV_T} e^{v/nV_T} + g_{min}.
 \]
-that is, a conductance in parallel with a current source. Assembling and
-solving this linearized system is one Newton iteration. Convergence is
-declared when every unknown moves less than
-$\text{tol}_i = \tau_i + \text{RELTOL} \cdot \max(|x_i^{(k)}|, |x_i^{(k+1)}|)$
-between iterates, with $\tau_i = \text{VNTOL} = 1\,\mu\text{V}$ for node
-voltages and $\text{ABSTOL} = 1\,\text{pA}$ for branch currents.
+The exponent is clamped at 200 as an overflow backstop; in normal
+operation the limiter below keeps it far smaller.
 
-\paragraph{Junction limiting.}
-The diode current $i = I_S (e^{v/V_T} - 1)$ makes plain Newton diverge: an
-early iterate easily proposes $v = 5\,$V, and $e^{5/0.02585}$ overflows any
-linearization. The classic fix is \texttt{pnjlim}, which damps the proposed
-junction voltage logarithmically once it passes the critical voltage
+\begin{derivation}{the critical voltage of pnjlim}
+Newton diverges on the bare exponential: an early iterate proposing
+$v = 5$\,V puts $e^{v/V_T} \approx e^{193}$ into the Jacobian. The classic
+limiter damps the proposed junction voltage once it passes the critical
+voltage $v_{crit}$, defined as the point of maximum curvature of the
+$i(v)$ characteristic. With $i' = (I_S/V_T)e^{v/V_T} =: u$ and
+$i'' = u/V_T$, the curvature is
 \[
-v_{crit} = V_T \ln \frac{V_T}{\sqrt{2}\, I_S},
+\kappa(v) = \frac{i''}{(1 + i'^2)^{3/2}}
+          = \frac{u}{V_T (1 + u^2)^{3/2}}, \qquad
+\frac{d\kappa}{du} = \frac{1 - 2u^2}{V_T (1 + u^2)^{5/2}} = 0
+\;\Longrightarrow\; u = \tfrac{1}{\sqrt{2}}.
 \]
-the point of maximum curvature of the exponential characteristic:
+Since $u$ grows monotonically in $v$, the maximum is unique, and
+substituting back:
+\[
+\frac{I_S}{V_T} e^{v/V_T} = \frac{1}{\sqrt{2}}
+\quad\Longrightarrow\quad
+v_{crit} = V_T \ln \frac{V_T}{\sqrt{2}\, I_S}.
+\]
+For $I_S = 10^{-14}$\,A this is about $0.72$\,V, right where a silicon
+junction starts conducting hard. Beyond $v_{crit}$, \texttt{pnjlim}
+replaces a proposed step by a logarithmic one,
+$v \leftarrow v_{old} + V_T \ln\bigl(1 + (v_{new} - v_{old})/V_T\bigr)$,
+which advances the junction a controlled amount per iteration regardless
+of how far Newton overshoots.
+\end{derivation}
 
-\begin{lstlisting}
+\begin{rust}
 fn pnjlim(vnew: f64, vold: f64, vt: f64, vcrit: f64) -> f64 {
     if vnew > vcrit && (vnew - vold).abs() > 2.0 * vt {
         if vold > 0.0 {
@@ -246,80 +549,54 @@ fn pnjlim(vnew: f64, vold: f64, vt: f64, vcrit: f64) -> f64 {
         vnew
     }
 }
-\end{lstlisting}
+\end{rust}
 
-\paragraph{Limiting must deny convergence.}
-This is the one place where nanospice shipped a real bug worth documenting.
-With limiting alone, the following happens on a common-emitter amplifier:
-the voltage divider puts the base at 2.1\,V while the emitter is at ground,
-\texttt{pnjlim} clamps the base-emitter voltage seen by the stamps to
-0.11\,V, the transistor therefore conducts nothing, the node voltages stop
-changing, and the delta-based convergence test reports success with the
-transistor completely off. The solution is the classic one: any iteration
-in which a limiter actually changed a junction voltage is not allowed to
-converge. The assembly reports a \texttt{limited} flag and the Newton loop
-requires it to be false. With that in place the same amplifier walks the
-junction up in logarithmic steps and lands on the correct bias in a dozen
-iterations.
-
-\paragraph{Fallbacks.}
-When plain Newton fails, two continuation methods run in order. Gmin
-stepping solves the circuit with a large conductance $g_{min}$ across every
-junction and reduces it decade by decade from $10^{-2}$ to $10^{-12}$\,S,
-warm-starting each solve from the last. Source stepping scales all source
-values by a factor ramped from 0.1 to 1.0; the zero-source circuit is
-trivially solvable and each step tracks the solution continuously. Gmin
-stepping handles floating-junction trouble, source stepping handles
-feedback and bistable topologies, and together they are the standard SPICE
-fallback chain:
-
-\begin{lstlisting}
-// second fallback: source stepping, ramp all sources up with warm starts
-reset(x, lim);
-for k in 1..=10 {
-    let fac = k as f64 / 10.0;
-    if newton(ckt, x, lim, &Mode::Dc { fac }, GMIN, ITL_OP).is_none() {
-        die("operating point did not converge");
-    }
-}
-\end{lstlisting}
-
-\section{Device models}
-\loc{device stamps, inside the solver section}{179}{751}
-
-\paragraph{Diode.}
-Shockley equation with emission coefficient $n$:
-$i = I_S (e^{v/nV_T} - 1)$, conductance $g_d = I_S e^{v/nV_T} / nV_T$, plus
-$g_{min}$ in parallel. The junction voltage passes through \texttt{pnjlim}
-with per-device memory of the last limited value.
+A wrapper, \texttt{junction}, adds the bookkeeping every junction needs:
+computing $v_{crit}$, remembering the last limited voltage per device,
+and reporting whether limiting actually changed the proposal, which the
+Newton loop consumes (section~\ref{sec:solver}). The diode uses one
+junction, the BJT two, which is why the limiter memory is two values per
+device.
 
 \paragraph{MOSFET, level 1.}
-The square-law model with channel-length modulation:
+The square law with channel-length modulation,
+$v_{ov} = v_{GS} - V_{T0}$:
 \[
 i_D = \begin{cases}
-0 & v_{GS} \le V_{T0} \\
+0 & v_{ov} \le 0 \\[2pt]
 K_P \left( v_{ov} v_{DS} - \tfrac{1}{2} v_{DS}^2 \right)(1 + \lambda v_{DS})
-  & v_{DS} < v_{ov} \\
-\tfrac{1}{2} K_P v_{ov}^2 (1 + \lambda v_{DS}) & v_{DS} \ge v_{ov}
+  & 0 < v_{DS} < v_{ov} \\[2pt]
+\tfrac{1}{2} K_P v_{ov}^2 \,(1 + \lambda v_{DS}) & v_{DS} \ge v_{ov}
 \end{cases}
-\qquad v_{ov} = v_{GS} - V_{T0}.
 \]
-The model is evaluated in an \emph{effective frame} that handles both the
-pmos polarity and the source-drain swap for $v_{DS} < 0$. With the sign
-$s = \pm 1$ for nmos/pmos and effective terminals $(d_e, s_e)$ chosen so
-that $v_{DS}^{e} \ge 0$, the actual terminal current is $I = s\, i_D$ and
-the chain rule gives, for example,
+with the small-signal parameters obtained by differentiation,
+$g_m = \partial i_D / \partial v_{GS}$ and
+$g_{ds} = \partial i_D / \partial v_{DS}$; in saturation
+$g_m = K_P v_{ov} (1 + \lambda v_{DS})$ and
+$g_{ds} = \tfrac{1}{2} K_P v_{ov}^2 \lambda$, so a nonzero $\lambda$ is
+what gives the transistor a finite output resistance.
+
+\begin{derivation}{the effective frame and the vanishing signs}
+The model must serve four cases: nmos and pmos, each with either terminal
+acting as the source. Define the polarity $s = +1$ for nmos, $-1$ for
+pmos, and choose effective terminals $(d_e, s_e)$ so that
+$v_{DS}^{e} = s\,(v_{d_e} - v_{s_e}) \ge 0$; evaluate the square law in
+this frame. The physical current into $d_e$ is $I = s\, i_D$. Now take
+any derivative, for example with respect to the gate voltage:
 \[
 \frac{\partial I}{\partial v_g}
  = s \cdot \frac{\partial i_D}{\partial v_{GS}^{e}}
      \cdot \frac{\partial v_{GS}^{e}}{\partial v_g}
  = s \cdot g_m \cdot s = g_m .
 \]
-The two signs cancel in every derivative, so the conductance stamps are
-identical for all four cases and only the right-hand side carries $s$. That
-one observation removes what is otherwise a four-way case split:
+Every derivative picks up the polarity twice, once from the current and
+once from the voltage transformation, and $s^2 = 1$. The conductance
+stamps are therefore identical for all four cases; only the right-hand
+side term carries $s$. One sign variable and a conditional swap replace a
+four-way case split:
+\end{derivation}
 
-\begin{lstlisting}
+\begin{rust}
 fn mos_op(dv: &Dev, x: &[f64]) -> (usize, usize, f64, f64, f64) {
     let Dev::M { d, g, s, kp, vt0, lambda, pmos } = dv else { unreachable!() };
     let sg = if *pmos { -1.0 } else { 1.0 };
@@ -329,11 +606,53 @@ fn mos_op(dv: &Dev, x: &[f64]) -> (usize, usize, f64, f64, f64) {
     let (id, gm, gds) = mos_eval(vgs, vds, *kp, *vt0, *lambda);
     (ed, es, sg * id, gm, gds)
 }
-\end{lstlisting}
+\end{rust}
 
-\paragraph{BJT.}
-The Ebers-Moll model in transport form. With
-$e_f = e^{v_{BE}/V_T}$ and $e_r = e^{v_{BC}/V_T}$:
+\section{The solver}
+\label{sec:solver}
+\locbar{solver: assembly, Newton, operating point}{179 lines, budget 572 to 751}{572}{751}
+
+\paragraph{Companion linearization.}
+A nonlinear device current $i(v)$ enters the linear system as its tangent
+at the current Newton iterate $v^{(k)}$:
+\[
+i \approx g\, v + I_{eq}, \qquad
+g = \left.\frac{\partial i}{\partial v}\right|_{v^{(k)}}, \qquad
+I_{eq} = i(v^{(k)}) - g\, v^{(k)},
+\]
+a conductance in parallel with a current source. Assembling and solving
+the resulting linear system is exactly one Newton-Raphson iteration on the
+full nonlinear network equations; the derivation is the multivariate
+Taylor expansion truncated after the linear term, applied device by
+device.
+
+\begin{derivation}{trapezoidal companion models}
+In transient analysis the reactive devices become resistive companions.
+The trapezoidal rule applied to $i = C\, dv/dt$ over a step $h$:
+\[
+\frac{i_{n+1} + i_n}{2} = C\, \frac{v_{n+1} - v_n}{h}
+\;\Longrightarrow\;
+i_{n+1} = \underbrace{\frac{2C}{h}}_{g_{eq}}\, v_{n+1}
+        - \Bigl( \frac{2C}{h}\, v_n + i_n \Bigr),
+\]
+a conductance $g_{eq}$ with a history current source: the capacitor is a
+resistor for the duration of one step. The inductor is the dual,
+$v_{n+1} = (2L/h)(i_{n+1} - i_n) - v_n$, stamped into its branch row
+since its current is already an MNA unknown. Each reactive device keeps a
+two-entry state, its value and the dual quantity, updated after every
+accepted step.
+
+Backward Euler would give $g_{eq} = C/h$ with a simpler history term and
+first-order accuracy; the trapezoidal rule is second order and A-stable
+with no numerical damping, which is why an LC tank simulated for twenty
+periods keeps its amplitude (a test enforces this). The price of zero
+damping is ringing at discontinuities, addressed by the breakpoint
+handling in section~\ref{sec:analyses}.
+\end{derivation}
+
+\paragraph{The BJT.}
+The Ebers-Moll model in transport form lives directly in the assembly
+match arm. With $e_f = e^{v_{BE}/V_T}$, $e_r = e^{v_{BC}/V_T}$:
 \[
 i_{CT} = I_S (e_f - e_r), \qquad
 i_{BE} = \frac{I_S}{\beta_F}(e_f - 1), \qquad
@@ -344,80 +663,150 @@ I_C = i_{CT} - i_{BC}, \qquad
 I_B = i_{BE} + i_{BC}, \qquad
 I_E = -(I_C + I_B).
 \]
-Four small-signal conductances
+The transport form references one saturation current for the main
+transfer, which keeps forward and reverse operation consistent through a
+single $i_{CT}$. Four conductances,
 $g_{mf} = \partial i_{CT}/\partial v_{BE}$,
 $g_{mr} = -\partial i_{CT}/\partial v_{BC}$,
 $g_\pi = \partial i_{BE}/\partial v_{BE}$,
-$g_\mu = \partial i_{BC}/\partial v_{BC}$
-fill the $3 \times 3$ Jacobian stamp
+$g_\mu = \partial i_{BC}/\partial v_{BC}$,
+fill the $3 \times 3$ Jacobian stamp over $(v_b, v_c, v_e)$:
 \[
-\begin{pmatrix}
-\partial I_C / \partial v_b & \partial I_C / \partial v_c & \partial I_C / \partial v_e \\
-\partial I_B / \partial v_b & \partial I_B / \partial v_c & \partial I_B / \partial v_e \\
-\partial I_E / \partial v_b & \partial I_E / \partial v_c & \partial I_E / \partial v_e
-\end{pmatrix}
-=
 \begin{pmatrix}
 g_{mf} - g_{mr} - g_\mu & g_{mr} + g_\mu & -g_{mf} \\
 g_\pi + g_\mu & -g_\mu & -g_\pi \\
 g_{mr} - g_{mf} - g_\pi & -g_{mr} & g_{mf} + g_\pi
-\end{pmatrix},
+\end{pmatrix}
 \]
-whose rows and columns each sum to zero, a quick correctness check for any
-MNA stamp. The pnp uses the same npn-frame equations through the sign trick
-above; both junctions carry their own \texttt{pnjlim} memory, which is why
-the limiter state is two values per device. An integration test builds the
-same common-emitter stage as npn and as pnp mirror image and requires the
-solutions to be exactly symmetric.
+for the rows $I_C, I_B, I_E$. Rows and columns each sum to zero, which is
+the standard sanity check for any MNA stamp: shifting all node voltages
+together must change nothing, and KCL must close. The pnp reuses the npn
+equations through the same sign argument as the MOSFET; both junctions go
+through \texttt{junction} with their own limiter memory. An integration
+test builds a common-emitter stage as npn and as pnp mirror image and
+requires exact symmetry of the solutions.
 
-\section{Transient analysis}
-\loc{analyses, with output selection}{217}{999}
+\paragraph{Newton iteration and convergence.}
+Convergence is declared when every unknown moves less than its two-part
+tolerance between iterates, and at least two iterations have run so a
+fresh linearization has confirmed the point:
 
-\paragraph{Companion models.}
-The trapezoidal rule applied to the capacitor equation $i = C\,dv/dt$ over a
-step $h$ gives
+\begin{rust}
+fn newton(ckt: &Circuit, x: &mut Vec<f64>, lim: &mut [[f64; 2]], mode: &Mode, gmin: f64, maxit: usize) -> Option<usize> {
+    let nn = ckt.nodes.len();
+    for it in 1..=maxit {
+        let mut limited = false;
+        let s = assemble(ckt, x, lim, mode, gmin, &mut limited);
+        let xn =
+            solve(s).unwrap_or_else(|k| die(&format!("singular matrix at {}, no conduction path?", unk_name(ckt, k))));
+        let conv = (1..xn.len()).all(|i| (xn[i] - x[i]).abs() <= tolv(i, nn, xn[i], x[i]));
+        *x = xn;
+        if conv && !limited && it > 1 {
+            return Some(it);
+        }
+    }
+    None
+}
+\end{rust}
+
+\begin{fieldnote}{limiting must deny convergence}
+The \texttt{limited} flag is a bug fix with a story. With limiting alone,
+the following happened on a common-emitter amplifier: the bias divider
+put the base at 2.1\,V while the emitter sat at ground, \texttt{pnjlim}
+clamped the base-emitter voltage seen by the stamps to 0.11\,V, the
+transistor therefore conducted nothing, the node voltages stopped
+changing, and the delta-based convergence test declared success with the
+transistor completely off. The output looked plausible: the divider
+voltage was exactly right, only unloaded.
+
+The repair is the classic one: an iteration in which a limiter actually
+changed a junction voltage is not allowed to converge. With the flag in
+place, the same circuit walks the junction up in logarithmic steps and
+lands on the correct bias, base at 2.05\,V and 1.3\,mA of collector
+current, in a dozen iterations. The general lesson: a convergence test
+that only watches the solution vector trusts the model evaluation to be
+honest, and limiting makes it dishonest on purpose.
+\end{fieldnote}
+
+\paragraph{Continuation fallbacks.}
+When plain Newton fails, the operating point is found by continuation:
+replace the hard problem $F(x) = 0$ by a family $H(x, \lambda) = 0$ that
+is easy at $\lambda = 0$, coincides with $F$ at $\lambda = 1$, and is
+tracked by warm-started Newton solves along the path. Two standard
+families run in order. Gmin stepping puts a conductance $g$ across every
+junction and walks it from $10^{-2}$\,S down to $10^{-12}$\,S decade by
+decade: at large $g$ the circuit is nearly linear and Newton cannot miss.
+Source stepping scales every source value by $\lambda$ ramped from 0.1 to
+1.0: the zero-source circuit has the trivial solution $x = 0$, and each
+increment moves the solution a small, trackable distance. Gmin stepping
+handles floating-junction trouble; source stepping handles feedback and
+bistable topologies, where gmin stepping can converge to the wrong
+branch. Together they are the standard SPICE fallback chain, and a
+cross-coupled NMOS latch in the test suite exercises the path.
+
+\section{Output selection}
+\locbar{output}{31 lines, budget 751 to 782}{751}{782}
+
+Output columns are the node voltages in netlist order followed by the
+branch currents in device order, named \texttt{v(node)} and
+\texttt{i(device)}. A \texttt{.print} card filters this list by name;
+unknown names warn on stderr rather than fail, so a typo costs a column,
+not a simulation. The selection maps names to unknown indices once and
+every analysis row is then a gather over that index list.
+
+\section{Analyses}
+\label{sec:analyses}
+\locbar{analyses and main}{217 lines, budget 782 to 999}{782}{999}
+
+\paragraph{Operating point and DC sweep.}
+\texttt{.op} is one call into the operating point solver.
+\texttt{.dc} sweeps a source value and re-solves at each point,
+warm-starting from the previous solution, which is itself a continuation
+along the sweep variable: on a smooth branch each solve takes two or
+three iterations. The sweep owns the source: any transient waveform on
+the swept source is dropped, so sweeping a pulse source does what the
+card says instead of silently doing nothing.
+
+\paragraph{Transient timestep control.}
+The integrator adapts its step to the local truncation error (LTE) of the
+trapezoidal rule.
+
+\begin{derivation}{the Milne estimate and the cube-root rule}
+The trapezoidal rule commits the local error
+$\varepsilon_{tr} = -\tfrac{h^3}{12}\, \dddot{x}(\xi)$ per step. The
+third derivative is estimated for free with a predictor: a quadratic
+polynomial through the last three accepted points, extrapolated to the
+new time. With step history $d_1, d_2$ and new step $h$, Lagrange
+extrapolation gives
 \[
-\frac{i_{n+1} + i_n}{2} = C\, \frac{v_{n+1} - v_n}{h}
-\quad\Longrightarrow\quad
-i_{n+1} = \underbrace{\frac{2C}{h}}_{g_{eq}} v_{n+1}
-        - \underbrace{\left( \frac{2C}{h} v_n + i_n \right)}_{-I_{eq}},
+x_p = \ell_0\, x_n + \ell_1\, x_{n-1} + \ell_2\, x_{n-2},
 \]
-a conductance $g_{eq}$ in parallel with a history current source: the
-capacitor becomes a resistor for the duration of one step. The inductor is
-dual, $v_{n+1} = (2L/h)(i_{n+1} - i_n) - v_n$, stamped into its branch row.
-Each reactive device keeps a two-entry state, its value and the dual
-quantity, updated after every accepted step. The trapezoidal rule is
-A-stable and undamped; an integration test runs an LC tank for twenty
-periods and requires the amplitude to survive.
-
-\paragraph{Timestep control.}
-The local truncation error of the trapezoidal rule is
-$\varepsilon_{tr} = -\tfrac{h^3}{12} \dddot{x}(\xi)$. To estimate
-$\dddot{x}$ without extra solves, the integrator carries a quadratic
-polynomial predictor through the last three accepted points. With step
-history $d_1, d_2$ and the new step $h$, Lagrange extrapolation gives
-coefficients
 \[
-\ell_0 = \frac{(h + d_1)(h + d_1 + d_2)}{d_1 (d_1 + d_2)}, \quad
-\ell_1 = -\frac{h (h + d_1 + d_2)}{d_1 d_2}, \quad
+\ell_0 = \frac{(h + d_1)(h + d_1 + d_2)}{d_1 (d_1 + d_2)}, \qquad
+\ell_1 = -\frac{h (h + d_1 + d_2)}{d_1 d_2}, \qquad
 \ell_2 = \frac{h (h + d_1)}{(d_1 + d_2)\, d_2},
 \]
-and the predictor error is
-$\varepsilon_p = \tfrac{1}{6} \dddot{x} \, h (h + d_1)(h + d_1 + d_2)$.
-Corrector and predictor bracket the same third derivative, so their
-difference measures it (a Milne-style estimate), and the trapezoidal share
-of the gap is
+whose interpolation error at the new point is
+$\varepsilon_p = \tfrac{1}{6} \dddot{x}\; h (h + d_1)(h + d_1 + d_2)$.
+Corrector and predictor err against the same true solution with errors
+proportional to the same $\dddot{x}$, so their difference measures it:
 \[
+x_c - x_p = \varepsilon_p - \varepsilon_{tr}
+\quad\Longrightarrow\quad
 \varepsilon_{tr} \approx
-\frac{h^3/12}{\;h(h+d_1)(h+d_1+d_2)/6 + h^3/12\;} \;\bigl( x_c - x_p \bigr),
+\frac{h^3/12}{\;h(h+d_1)(h+d_1+d_2)/6 \;+\; h^3/12\;}\,\bigl(x_c - x_p\bigr),
 \]
-which for uniform steps reduces to the classic factor $1/13$. The error is
-compared per unknown against $\text{TRTOL} \cdot \text{tol}_i$ with
-$\text{TRTOL} = 7$, the step is rejected above 1, and the next step follows
-the cube-root rule $h' = 0.9\, h\, r^{-1/3}$, clamped to $[0.3, 2] \times h$
-and capped at \texttt{tstep}:
+which for uniform steps ($d_1 = d_2 = h$) reduces to
+$\varepsilon_{tr} \approx (x_c - x_p)/13$, the classic factor. The error
+is compared per unknown against $\text{TRTOL}\cdot\text{tol}_i$; with the
+error scaling as $h^3$, the step that would exactly meet the tolerance
+satisfies $h' = h\, (1/r)^{1/3}$ where $r$ is the worst error ratio, and
+the controller applies it with a safety factor of 0.9, clamped to
+$[0.3, 2] \times h$ and capped at \texttt{tstep}. Rejected steps
+($r > 1$) are retried smaller.
+\end{derivation}
 
-\begin{lstlisting}
+\begin{rust}
 let etrap = hs * hs * hs / 12.0;
 let fac = etrap / (hs * (hs + d1) * (hs + d1 + d2) / 6.0 + etrap);
 let mut r: f64 = 0.0;
@@ -425,132 +814,103 @@ for i in 1..m {
     r = r.max(fac * (xn[i] - xp[i]).abs() / (TRTOL * tolv(i, nn, xn[i], x[i])));
 }
 let scale = 0.9 / r.max(1e-8).cbrt();
-\end{lstlisting}
+\end{rust}
 
 The predictor doubles as the Newton starting point, which is free and
-usually saves an iteration. Before three points of history exist, and after
-a nonconvergent step (cut by 8, the SPICE2 reflex), the iteration count
-controls the step instead.
+usually saves an iteration. Before three points of history exist, and
+after a nonconvergent step (cut by 8, the SPICE2 reflex), the iteration
+count controls the step instead. With \texttt{uic} the operating point is
+skipped entirely and the \texttt{ic=} values seed the reactive state,
+which is how an undriven LC tank can start oscillating at all: its
+operating point is identically zero.
 
-\paragraph{Breakpoints.}
-A pulse edge in the middle of a step is invisible to the method: the
-companion history current at the interval start belongs to the pre-edge
-circuit, and the predictor extrapolates smoothness that is not there. The
-first RC test against the analytic step response failed at exactly the
-first output point for this reason. The classic remedy is exact: every
-corner of every pulse source (delay, rise end, fall start, fall end, per
-period) is registered as a breakpoint, steps are clamped to land on
-breakpoints exactly, and after crossing one the integrator restarts with a
-small step and cleared predictor history, since the waveform derivative is
-discontinuous there.
+\begin{fieldnote}{the edge the integrator cannot see}
+The first RC test against the analytic step response failed at exactly
+the first output point, and the failure is worth numbers. A pulse edge at
+$t \approx 0$ inside the first step $[0, h]$ is invisible to the method:
+the capacitor's history current at the interval start still belongs to
+the pre-edge circuit, so the trapezoidal update gives
+\[
+v_1 = \frac{h/2\tau}{1 + h/2\tau} \approx 0.048
+\quad\text{instead of}\quad
+1 - e^{-h/\tau} \approx 0.095
+\]
+for $h/\tau = 0.1$: a factor-two error at the first point, and no
+smaller $h$ fixes the ratio, because the history term is wrong by
+construction. The LTE controller cannot see it either, since the
+predictor has no history yet. The classic remedy is exact rather than
+adaptive: every corner of every pulse source (delay, rise end, fall
+start, fall end, per period) is registered as a breakpoint, steps are
+clamped to land on breakpoints exactly, and after crossing one the
+integrator restarts with a small step and cleared predictor history,
+because the waveform derivative is discontinuous there.
+\end{fieldnote}
 
-\section{Small-signal AC}
-\loc{numbers: Num trait and complex}{78}{101}
-
-AC analysis linearizes the circuit at the operating point and solves
-$(G + j\omega C)\, \tilde{x} = b$ per frequency, where $b$ holds the
-\texttt{ac} source values. The implementation leans on one observation: at
-a converged operating point the limiters pass voltages through unchanged, so
-\emph{the resistive matrix $G$ is exactly the DC Jacobian that the last
-Newton iteration already assembles}. The AC path therefore reuses
-\texttt{assemble} verbatim, maps the result to complex, and adds only the
-reactive stamps $j\omega C$ and the branch entry $-j\omega L$. No device
-model contains AC-specific code.
-
-The complex solve is the same 96-line sparse LU. The solver is generic over
-a three-method trait, implemented for \texttt{f64} and a 15-line complex
-type:
-
-\begin{lstlisting}
-trait Num:
-    Copy
-    + std::ops::Add<Output = Self>
-    + std::ops::Sub<Output = Self>
-    + std::ops::Mul<Output = Self>
-    + std::ops::Div<Output = Self>
-{
-    fn zero() -> Self;
-    fn one() -> Self;
-    fn mag(self) -> f64;
-}
-\end{lstlisting}
-
-\texttt{mag} is the pivoting magnitude, absolute value for reals and modulus
-for complex. This trait plus operator implementations is the entire price
-Rust charges for not shipping a complex type in std; the alternative, two
-copies of the factorization, costs more lines and can drift apart.
-
-\section{The parser}
-\loc{parser}{262}{426}
-
-The parser is the largest section and the least glamorous. Line discipline
-follows SPICE: the first line is a title, \texttt{*} comments, \texttt{;}
-trails, \texttt{+} continues, everything is case-insensitive, and
-parentheses and commas are replaced by whitespace once during preprocessing,
-which lets \texttt{sin(0 1 1k)} and \texttt{sin 0 1 1k} tokenize
-identically.
-
-Numbers use the SPICE grammar: the longest prefix that parses as a float,
-then a unit suffix. The only subtlety is that \texttt{meg} must match before
-\texttt{m}, handled by table order:
-
-\begin{lstlisting}
-fn num(tok: &str) -> Option<f64> {
-    let t = tok.trim();
-    if !t.is_ascii() {
-        return None;
-    }
-    let mut end = t.len();
-    while end > 0 && t[..end].parse::<f64>().is_err() {
-        end -= 1;
-    }
-    if end == 0 {
-        return None;
-    }
-    let v: f64 = t[..end].parse().unwrap();
-    let mult = SUFFIXES.iter().find(|(s, _)| t[end..].starts_with(s)).map_or(1.0, |(_, m)| *m);
-    Some(v * mult)
-}
-\end{lstlisting}
-
-The ASCII guard exists because byte-indexed slicing panics inside multibyte
-characters; a netlist containing a literal micro sign must produce
-\emph{bad number}, not a crash, and a fuzz test holds the parser to that.
-
-\texttt{.model} cards are collected in a prepass so they may appear anywhere
-in the deck. A device line referencing a model has the model's parameter
-tokens spliced in \emph{behind} its inline tokens; since parameter lookup
-returns the first match, instance parameters override model parameters by
-construction, with no explicit precedence logic.
-
-Subcircuits are the notable omission. \texttt{.subckt} costs roughly a
-hundred lines of name spacing and flattening and is the single feature most
-requested of any SPICE clone; it lost to the transistor models.
+\paragraph{Small-signal AC.}
+Write every waveform as a small phasor perturbation around the operating
+point, $x(t) = x_0 + \mathrm{Re}\{\hat{x}\, e^{j\omega t}\}$, insert into
+the network equations, and keep first-order terms:
+\[
+\bigl( G + j\omega C \bigr)\, \hat{x} = \hat{b},
+\]
+where $G$ is the Jacobian of the resistive equations at $x_0$, $C$
+collects the reactances, and $\hat{b}$ holds the \texttt{ac} source
+values. The implementation leans on one observation: at a converged
+operating point the limiters pass voltages through unchanged, so
+\emph{$G$ is exactly the matrix the last Newton iteration already
+assembles}. The AC path calls \texttt{assemble} once, maps the rows to
+complex, adds $j\omega C$ quads and the $-j\omega L$ branch entries, and
+hands the result to the same generic sparse LU. No device model contains
+any AC-specific code; adding a device to DC automatically adds it to AC.
+Frequencies sweep linearly or per decade
+($f_k = f_1 \cdot 10^{k/n}$), and each unknown reports magnitude and
+phase.
 
 \section{Validation}
+\locbar{tests/cli.rs}{265 lines, 0 of 999: tests are free}{0}{0}
 
-The test suite is 18 integration tests running the built binary on real
-netlists. Tests are free of the budget, so robustness lives there, and the
-suite leans on references that are independent of the implementation:
+The test suite is 18 integration tests that run the built binary on real
+netlists and parse its CSV. Tests do not count toward the budget, so
+robustness lives there, and the suite prefers references that are
+independent of the implementation: closed-form solutions, physical
+invariants, and reductions computed separately in the test itself.
 
-\begin{itemize}
-\item Analytic: RC and RL step responses against $1 - e^{-t/\tau}$, the RC
-corner at $1/\sqrt{2}$ and $-45^\circ$, LC amplitude $i_0 \sqrt{L/C}$, and
-energy conservation over twenty periods.
-\item Bias points: MOSFET saturation current, BJT $I_C = \beta_F I_B$
-consistency, diode KCL closure, and exact npn/pnp mirror symmetry.
-\item Structural: a 200-node ladder and a 30-stage LCG-randomized resistor
-ladder verified node by node against a Thevenin reduction computed
-independently in the test.
-\item Negative: seven malformed netlists (unknown devices, bad numbers,
-missing tokens, non-ASCII input, floating nodes) must exit with a clean
-named error and must not panic; the floating-node case must name the node.
-\item Meta: the LOC counter itself.
-\end{itemize}
+\begin{center}
+\small
+\begin{tabular}{lp{9.2cm}}
+\toprule
+test & reference \\
+\midrule
+\texttt{op\_divider} & voltage division, source current sign convention \\
+\texttt{op\_diode} & KCL closure against the Shockley equation \\
+\texttt{op\_mos} & saturation current $\tfrac{1}{2}K_P v_{ov}^2$, exact bias \\
+\texttt{op\_model\_card} & $n{=}2$ diode drop, fails if the model is not resolved \\
+\texttt{op\_bjt} & $I_C = \beta_F I_B$ and exact npn/pnp mirror symmetry \\
+\texttt{op\_ladder} & 201 equal resistors, interior node voltage and current \\
+\texttt{op\_random\_ladder} & LCG-randomized ladder vs. Thevenin reduction in the test \\
+\texttt{op\_latch} & cross-coupled NMOS latch, hard operating point \\
+\texttt{dc\_sweep} & linearity of the swept divider \\
+\texttt{tran\_rc}, \texttt{tran\_rl} & step responses vs. $1 - e^{-t/\tau}$ \\
+\texttt{tran\_lte\_fast\_tau} & $\tau = \texttt{tstep}/10$, LTE control must resolve the edge \\
+\texttt{tran\_uic\_lc} & LC amplitude $i_0 \sqrt{L/C}$ from initial conditions \\
+\texttt{tran\_lc\_energy} & no numerical damping over twenty periods \\
+\texttt{ac\_rc} & $1/\sqrt{2}$ magnitude and $-45^\circ$ at the corner \\
+\texttt{print\_selection} & column filtering \\
+\texttt{clean\_errors} & seven malformed decks: named errors, no panics \\
+\texttt{loc\_budget} & the budget itself \\
+\bottomrule
+\end{tabular}
+\end{center}
 
-The LTE controller has a dedicated regression: an RC circuit whose time
-constant is ten times smaller than \texttt{tstep}, which a fixed-step
-integrator fails badly and the controller must resolve on its own.
+Two tests deserve emphasis. The randomized ladder builds a 30-stage
+resistor network from a seeded LCG, computes every node voltage by
+backward Thevenin reduction and forward division inside the test, and
+compares node by node at $10^{-6}$ relative: this validates the sparse
+factorization, the pivoting, and the fill-in handling on unstructured
+values with an algorithm that shares no code with the solver. The energy
+test runs the LC tank for twenty periods and rejects any numerical
+damping, which pins the choice of the trapezoidal rule: backward Euler
+fails this test by design.
 
 \section{The cut list}
 \label{sec:cuts}
@@ -567,26 +927,33 @@ Gummel-Poon BJT & Ebers-Moll covers the teaching core & $\sim$80 \\
 junction capacitances & needs charge state on every junction & $\sim$60 \\
 noise analysis & needs the adjoint system & $\sim$80 \\
 \texttt{.param} expressions & a calculator is its own project & $\sim$60 \\
+temperature sweeps & $V_T$ is a constant, by choice & $\sim$25 \\
 current-based convergence check & limiting denial covers the failure mode & $\sim$15 \\
 \bottomrule
 \end{tabular}
 \caption{Features that did not fit, with the reason and the estimated cost.}
 \end{table}
 
+The most consequential physical cut is the junction capacitances: without
+them the semiconductors are purely static, transistors switch
+instantaneously, and a ring oscillator has no defined frequency. It would
+be the first candidate if the budget ever grew.
+
 On language: the device enum with exhaustive matching carries the parser,
 the assembly, and the output selection, and is the main reason the budget
 holds. C++ would trade the roughly 60 lines the \texttt{Num} trait and
 complex type cost against visitor or inheritance boilerplate around
-\texttt{std::variant}, roughly a wash with fewer static guarantees. Fortran
-would shine on dense arrays, which this simulator does not use, and struggle
-badly on the parser and the sparse row structure.
+\texttt{std::variant}, roughly a wash with fewer static guarantees.
+Fortran would shine on dense arrays, which this simulator does not use,
+and struggle badly on the parser and the sparse row structure. Python
+would halve the line count and change the point of the exercise.
 
 \section{Closing}
 
 The final count is 999 of 1000 lines, with the classic algorithm set
-complete: MNA, sparse LU with partial pivoting, Newton with pnjlim and both
-continuation fallbacks, trapezoidal integration with LTE control and
-breakpoints, small-signal AC, nine device types, four analyses, model
+complete: MNA, sparse LU with partial pivoting, Newton with pnjlim and
+both continuation fallbacks, trapezoidal integration with LTE control and
+breakpoints, small-signal AC, ten device types, four analyses, model
 cards, initial conditions, and output selection. The one line of headroom
 is left as a reminder that the next feature must pay for itself.
 
