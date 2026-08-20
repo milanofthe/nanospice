@@ -169,6 +169,20 @@ fn op_ladder() {
 }
 
 #[test]
+fn tran_uic_lc() {
+    // undriven lc tank started by an inductor initial current: amplitude is
+    // i0 * sqrt(l/c) = 31.62 mV, only reachable with uic (the op is all zero)
+    let rows = run(
+        "lc.cir",
+        "lc tank\nc1 a 0 1u\nl1 a 0 1m ic=1m\n.tran 5u 200u uic\n.end\n",
+    );
+    let (h, d) = table(&rows, "tran");
+    let c = col(&h, "v(a)");
+    let peak = d.iter().map(|r| r[c].abs()).fold(0.0, f64::max);
+    assert!((peak - 0.03162).abs() < 1e-3, "peak = {}", peak);
+}
+
+#[test]
 fn ac_rc() {
     let rows = run(
         "acrc.cir",

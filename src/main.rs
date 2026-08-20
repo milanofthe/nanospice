@@ -197,8 +197,8 @@ fn wave_val(dc: f64, wave: &Option<Wave>, t: f64) -> f64 {
 #[derive(Clone)]
 enum Dev {
     R { p: usize, n: usize, v: f64 },
-    C { p: usize, n: usize, v: f64 },
-    L { p: usize, n: usize, v: f64, br: usize },
+    C { p: usize, n: usize, v: f64, ic: f64 },
+    L { p: usize, n: usize, v: f64, br: usize, ic: f64 },
     V { p: usize, n: usize, dc: f64, ac: f64, wave: Option<Wave>, br: usize },
     I { p: usize, n: usize, dc: f64, ac: f64, wave: Option<Wave> },
     D { p: usize, n: usize, is: f64, nf: f64 },
@@ -212,7 +212,7 @@ enum Dev {
 enum Analysis {
     Op,
     Dc { src: String, start: f64, stop: f64, step: f64 },
-    Tran { tstep: f64, tstop: f64 },
+    Tran { tstep: f64, tstop: f64, uic: bool },
     Ac { dec: bool, n: usize, f1: f64, f2: f64 },
 }
 
@@ -359,6 +359,7 @@ fn parse(src: &str) -> Circuit {
                 "tran" => analyses.push(Analysis::Tran {
                     tstep: numx(tok(&toks, 1)),
                     tstop: numx(tok(&toks, 2)),
+                    uic: toks.contains(&"uic"),
                 }),
                 "ac" => {
                     let kind = tok(&toks, 1);
@@ -399,8 +400,19 @@ fn parse(src: &str) -> Circuit {
         };
         let dev = match toks[0].chars().next().unwrap() {
             'r' => Dev::R { p: nid(tok(&toks, 1)), n: nid(tok(&toks, 2)), v: numx(tok(&toks, 3)) },
-            'c' => Dev::C { p: nid(tok(&toks, 1)), n: nid(tok(&toks, 2)), v: numx(tok(&toks, 3)) },
-            'l' => Dev::L { p: nid(tok(&toks, 1)), n: nid(tok(&toks, 2)), v: numx(tok(&toks, 3)), br: 0 },
+            'c' => Dev::C {
+                p: nid(tok(&toks, 1)),
+                n: nid(tok(&toks, 2)),
+                v: numx(tok(&toks, 3)),
+                ic: pval(&toks[4..], "ic", f64::NAN),
+            },
+            'l' => Dev::L {
+                p: nid(tok(&toks, 1)),
+                n: nid(tok(&toks, 2)),
+                v: numx(tok(&toks, 3)),
+                br: 0,
+                ic: pval(&toks[4..], "ic", f64::NAN),
+            },
             'v' => {
                 let (dc, ac, wave) = src_spec(&toks[3..]);
                 Dev::V { p: nid(tok(&toks, 1)), n: nid(tok(&toks, 2)), dc, ac, wave, br: 0 }
@@ -648,7 +660,7 @@ fn assemble(ckt: &Circuit, x: &[f64], lim: &mut [[f64; 2]], mode: &Mode, gmin: f
     for (di, dv) in ckt.devs.iter().enumerate() {
         match dv {
             Dev::R { p, n, v } => s.quad(*p, *n, *p, *n, 1.0 / v),
-            Dev::C { p, n, v } => {
+            Dev::C { p, n, v, .. } => {
                 if let Mode::Tran { h, st, .. } = mode {
                     let geq = 2.0 * v / h;
                     let ieq = geq * st[di][0] + st[di][1];
@@ -657,7 +669,7 @@ fn assemble(ckt: &Circuit, x: &[f64], lim: &mut [[f64; 2]], mode: &Mode, gmin: f
                     s.rhs(*n, -ieq);
                 }
             }
-            Dev::L { p, n, v, br } => {
+            Dev::L { p, n, v, br, .. } => {
                 s.branch(*p, *n, *br);
                 if let Mode::Tran { h, st, .. } = mode {
                     let req = 2.0 * v / h;
@@ -787,12 +799,13 @@ fn op_setup(ckt: &Circuit) -> (usize, Vec<f64>, Vec<[f64; 2]>) {
 }
 
 // Reactive state per device: [v, i] for C, [i, v] for L (value and its dual).
-fn init_state(ckt: &Circuit, x: &[f64]) -> Vec<[f64; 2]> {
+fn init_state(ckt: &Circuit, x: &[f64], uic: bool) -> Vec<[f64; 2]> {
+    let pick = |ic: f64, live: f64| if uic && ic.is_finite() { ic } else { live };
     ckt.devs
         .iter()
         .map(|d| match d {
-            Dev::C { p, n, .. } => [x[*p] - x[*n], 0.0],
-            Dev::L { br, .. } => [x[*br], 0.0],
+            Dev::C { p, n, ic, .. } => [pick(*ic, x[*p] - x[*n]), 0.0],
+            Dev::L { br, ic, .. } => [pick(*ic, x[*br]), 0.0],
             _ => [0.0, 0.0],
         })
         .collect()
@@ -801,7 +814,7 @@ fn init_state(ckt: &Circuit, x: &[f64]) -> Vec<[f64; 2]> {
 fn update_state(ckt: &Circuit, x: &[f64], h: f64, st: &mut [[f64; 2]]) {
     for (k, d) in ckt.devs.iter().enumerate() {
         match d {
-            Dev::C { p, n, v } => {
+            Dev::C { p, n, v, .. } => {
                 let vn = x[*p] - x[*n];
                 st[k] = [vn, 2.0 * v / h * (vn - st[k][0]) - st[k][1]];
             }
@@ -897,13 +910,17 @@ fn breakpoints(ckt: &Circuit, tstop: f64) -> Vec<f64> {
     bp
 }
 
-fn run_tran(ckt: &Circuit, tstep: f64, tstop: f64) {
+fn run_tran(ckt: &Circuit, tstep: f64, tstop: f64, uic: bool) {
     if tstep <= 0.0 || tstop <= 0.0 {
         die("bad .tran parameters");
     }
-    let (m, mut x, mut lim) = op_setup(ckt);
+    let m = ckt.nodes.len() + ckt.nb;
+    let (mut x, mut lim) = (vec![0.0; m], vec![[0.0; 2]; ckt.devs.len()]);
+    if !uic {
+        op_solve(ckt, &mut x, &mut lim);
+    }
     let nn = ckt.nodes.len();
-    let mut st = init_state(ckt, &x);
+    let mut st = init_state(ckt, &x, uic);
     out!("# tran");
     out!("time,{}", columns(ckt).join(","));
     out!("{:.9e},{}", 0.0, fmt_row(&x[1..]));
@@ -1017,7 +1034,7 @@ fn run_ac(ckt: &Circuit, dec: bool, n: usize, f1: f64, f2: f64) {
         };
         for dv in &ckt.devs {
             match dv {
-                Dev::C { p, n, v } => sc.quad(*p, *n, *p, *n, Cx::new(0.0, w * v)),
+                Dev::C { p, n, v, .. } => sc.quad(*p, *n, *p, *n, Cx::new(0.0, w * v)),
                 Dev::L { v, br, .. } => sc.add(*br, *br, Cx::new(0.0, -w * v)),
                 Dev::V { ac, br, .. } => sc.rhs(*br, Cx::new(*ac, 0.0)),
                 Dev::I { p, n, ac, .. } => {
@@ -1052,7 +1069,7 @@ fn main() {
         match an {
             Analysis::Op => run_op(&ckt),
             Analysis::Dc { src: s, start, stop, step } => run_dc(&mut ckt, &s, start, stop, step),
-            Analysis::Tran { tstep, tstop } => run_tran(&ckt, tstep, tstop),
+            Analysis::Tran { tstep, tstop, uic } => run_tran(&ckt, tstep, tstop, uic),
             Analysis::Ac { dec, n, f1, f2 } => run_ac(&ckt, dec, n, f1, f2),
         }
     }
