@@ -4,9 +4,10 @@ A classic SPICE circuit simulator in one Rust source file, capped at 1000
 lines of code. No dependencies, std only. A test counts the nonblank,
 noncomment lines of src/main.rs and fails above 1000. Current count: 1000.
 
-The repository is educational. The report in report/ derives every algorithm
-in the simulator, explains the design decisions, and maps both to the code
-section by section.
+The repository is educational. The report in report/ traces the algorithm
+set to its Berkeley origins, derives every algorithm in the simulator,
+explains the design decisions, and maps both to the code section by
+section.
 
 ## Build and run
 

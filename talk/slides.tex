@@ -63,8 +63,8 @@
 \end{tikzpicture}%
 \end{tcolorbox}}
 
-\title{\textbf{nanospice}}
-\subtitle{A SPICE circuit simulator in 1000 lines of Rust}
+\title{\textbf{How much SPICE can you get\\ in 1000 lines of code?}}
+\subtitle{nanospice: the classic Berkeley algorithm set in one Rust file}
 \author{Milan Rother}
 \date{2026 \\[3mm] {\footnotesize github.com/milanofthe/nanospice}}
 
@@ -72,6 +72,89 @@
 
 \begin{frame}
 \titlepage
+\end{frame}
+
+\begin{frame}{Berkeley, 1969}
+\begin{itemize}
+\item an integrated circuit cannot be breadboarded, and an internal node
+      cannot be probed
+\item a design error after tapeout costs a mask set: simulation becomes
+      the instrument
+\item Berkeley builds a series of simulators: BIAS, SLIC, TIME, CANCER
+\end{itemize}
+\vspace{3mm}
+\begin{tile}{The machine}
+A CDC 6400 mainframe: 256\,KB of memory by day, 384\,KB at night. A
+large circuit is 50 nodes and 25 transistors. Jobs run in a nightly
+batch; a crash kills every job behind it.
+\end{tile}
+\end{frame}
+
+\begin{frame}{CANCER}
+\begin{itemize}
+\item a class project in Ron Rohrer's circuit simulation course; the
+      grading rule: if Don Pederson approves of the program, everyone
+      passes
+\item already inside: sparse matrix solver, implicit integration,
+      built-in device models, adjoint sensitivity
+\item presented by Rohrer at the 1971 ISSCC
+\end{itemize}
+\vspace{3mm}
+\begin{tile}{Computer Analysis of Nonlinear Circuits, Excluding Radiation}
+Simulators written under defense contracts were required to evaluate the
+radiation hardness of a circuit. The name was a statement that this
+program never would, and took no defense money. It was Berkeley in the
+sixties.
+\end{tile}
+\end{frame}
+
+\begin{frame}{CANCER becomes SPICE}
+\begin{center}
+\begin{tabular}{ll}
+\toprule
+1971 & Nagel renames it: Simulation Program with Integrated Circuit Emphasis \\
+1972 & released to the public domain, Pederson's condition \\
+1973 & announced at the Midwest Symposium on Circuit Theory, Waterloo \\
+1975 & SPICE2, Nagel's thesis: MNA, trapezoid with LTE, limiting, stepping \\
+1983 & SPICE 2G6 (Ellis Cohen): the netlist format freezes \\
+1993 & SPICE 3f5 (Tom Quarles): rewrite in C, gmin stepping \\
+today & ngspice, Xyce; HSPICE, PSpice, Spectre, Eldo \\
+\bottomrule
+\end{tabular}
+\end{center}
+\vspace{2mm}
+\begin{itemize}
+\item public domain is why SPICE won: universities taught it, graduates
+      wrote to Berkeley for a tape, every derivative kept the language
+\item the MOSFET model arrived in a weekend when Dave Hodges came from
+      Bell Labs: Shichman-Hodges, the level 1 of this talk
+\end{itemize}
+\end{frame}
+
+\begin{frame}{Line counts, measured}
+\begin{center}
+\begin{tabular}{lllr}
+\toprule
+program & year & language & code lines \\
+\midrule
+SPICE 2G6 & 1983 & Fortran & 14595 \\
+SPICE 3f5 & 1993 & C & 126697 \\
+ngspice & 2026 & C & 562128 \\
+nanospice & 2026 & Rust & 1000 \\
+\bottomrule
+\end{tabular}
+\end{center}
+\vspace{2mm}
+\begin{itemize}
+\item nonblank, noncomment lines, counted with tokei on the published
+      sources; ngspice from the current git tree, C and headers only
+\item the algorithm core is a small fraction of any production
+      simulator; the bulk is device models, UI, and compatibility
+\end{itemize}
+\vspace{2mm}
+\begin{center}
+So: how much SPICE can you get in 1000 lines?
+\end{center}
 \end{frame}
 
 \begin{frame}{The rule}
@@ -245,8 +328,9 @@ v \leftarrow v_{old} + V_T \ln\!\left(1 + \frac{v_{new} - v_{old}}{V_T}\right)
 \item Newton diverges on the bare exponential: $5$\,V proposed means
       $e^{193}$ in the Jacobian
 \item beyond the curvature maximum $v_{crit}$, steps become logarithmic
+\item this is SPICE2's \texttt{pnjlim}, unchanged since 1975
 \end{itemize}
-\vspace{3mm}
+\vspace{1mm}
 \begin{tile}{Failure mode: limiting without the flag}
 A common-emitter amplifier converges with the transistor off: the limiter
 clamps the junction, no current flows, the deltas vanish, the test says
@@ -352,6 +436,8 @@ $(g_{min}, \text{source scale})$ plane, walked with warm starts.
 \item the predictor doubles as the Newton starting point
 \item waveform corners are breakpoints; steps land on them exactly
 \item the two predictor-less restart steps run damped backward Euler
+\item when the cuts bottom out: \texttt{timestep too small}; SPICE2 said
+      \texttt{TIMESTEP REDUCED TO ZILCH}
 \end{itemize}
 \end{frame}
 
@@ -507,13 +593,14 @@ hierarchical.
 
 \begin{frame}{Closing}
 \begin{center}
-{\large \textbf{1000 of 1000 lines}}
+{\large \textbf{How much SPICE in 1000 lines? The 1975 core, complete.}}
 \end{center}
 \vspace{2mm}
 Sparse LU, two contribution primitives, Newton with limiting and homotopy
 fallbacks, trapezoid with LTE, breakpoints and damped restarts, graded
 junction capacitances, AC from the DC Jacobian, eleven devices, four
-analyses, 23 tests.
+analyses, 23 tests. The algorithm set is fifty years old and still
+carries a working simulator.
 \vspace{4mm}
 \begin{center}
 \texttt{github.com/milanofthe/nanospice}\\[1mm]

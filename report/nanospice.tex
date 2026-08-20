@@ -18,6 +18,7 @@
   legend style={font=\footnotesize, draw=black}, legend cell align=left,
   grid=major, grid style={dotted, black!99, line width=0.3pt}}}
 \usepackage{titlesec}
+\usepackage{float}
 \usepackage{microtype}
 \usepackage[hidelinks]{hyperref}
 
@@ -89,9 +90,9 @@ operating point fallbacks, sparse LU factorization, trapezoidal transient
 integration with local truncation error timestep control, and small-signal
 AC analysis. The entire solver lives in one Rust source file of at most
 1000 nonblank, noncomment lines, enforced by a test, with no dependencies
-outside the standard library. This report walks through the file in order,
-derives each algorithm, and explains the design decisions the budget
-forced. The bar under each section heading shows where that code section
+outside the standard library. This report traces the algorithm set to its
+Berkeley origins, walks through the file in order, derives each
+algorithm, and explains the design decisions the budget forced. The bar under each section heading shows where that code section
 sits in the line budget.
 \end{abstract}
 
@@ -134,6 +135,117 @@ The parser is the largest section: the numerics of a circuit simulator
 are compact, the input format is not. Everything the budget excluded is listed with reasons in
 section~\ref{sec:cuts}.
 
+\section{Background: fifty years of SPICE}
+\locbar{history only}{0 lines}{0}{0}
+
+Nothing in this simulator is algorithmically original. The algorithm set
+is the Berkeley canon, and the budget question the repository asks is
+how much of that canon fits in 1000 lines. This section records where
+the canon comes from.
+
+The motivation is the integrated circuit itself. An IC cannot be
+breadboarded, an internal node cannot be probed, and a design error after
+tapeout costs a mask set. By the late 1960s simulation was turning into
+the primary instrument of circuit design, and UC Berkeley produced a
+series of simulators: BIAS, SLIC, TIME, and CANCER \cite{lifeofspice}.
+
+CANCER began as the class project of a circuit simulation course Ronald
+Rohrer taught from 1969, under an unusual grading rule: if Donald
+Pederson approved of the program, the whole class passed
+\cite{lifeofspice}. The class program already contained the outline of
+everything that followed: a sparse matrix solver, implicit integration,
+built-in semiconductor device models, and adjoint sensitivity
+computation. Rohrer presented it at the 1971 ISSCC \cite{cancer}. The
+acronym, Computer Analysis of Nonlinear Circuits, Excluding Radiation,
+was a political statement: contemporary simulators written under defense
+contracts were required to evaluate the radiation hardness of a circuit,
+and a Berkeley program of that era advertised in its name that it never
+would, and took no defense money \cite{lifeofspice}.
+
+When Rohrer left Berkeley the program became Laurence Nagel's project
+under Pederson, whose condition was that the rewrite be releasable to
+the public domain. Nagel renamed it SPICE, Simulation Program with
+Integrated Circuit Emphasis; copies circulated from 1971, version 1 was
+released to the public domain in May 1972, and Pederson announced it at
+the Sixteenth Midwest Symposium on Circuit Theory in Waterloo on April
+12, 1973 \cite{spice1}. The public domain decision is the reason SPICE
+became the industry standard: universities taught it, graduates wrote to
+Berkeley for a tape, and every derivative kept the input language.
+SPICE1 modeled only bipolar transistors, because that was what Berkeley
+designed, until David Hodges arrived from Bell Labs and the
+Shichman-Hodges MOSFET model \cite{shichman} was put in over a weekend
+\cite{lifeofspice}. That model is what this file implements as MOS
+level 1.
+
+SPICE2, Nagel's 1975 thesis \cite{spice2}, is the version this project
+reimplements in miniature. It switched to modified nodal analysis,
+published the same year by Ho, Ruehli, and Brennan \cite{mna}, and
+established the transient loop that production simulators still run:
+trapezoidal integration with local truncation error timestep control,
+junction limiting, and source stepping for the operating point. The
+machine was a CDC 6400 with 256 kilobytes of memory by day and 384 at
+night; a large circuit was 50 nodes and 25 transistors
+\cite{lifeofspice}. Ellis Cohen carried the program to SPICE 2G6 in
+1983, the version the commercial family descends from, and its netlist
+format froze into the industry interchange format. The decks in this
+repository are that format, unchanged. SPICE3, Thomas Quarles' rewrite
+in C (1985 to 3f5 in 1993), added gmin stepping \cite{quarles} and is
+the direct ancestor of the open source line, ngspice and Xyce; HSPICE,
+PSpice, Spectre, and Eldo are the commercial branch.
+
+Table~\ref{tab:provenance} traces each piece of nanospice to its origin.
+The one deliberate departure is the pivot search: bucketed by first
+column instead of Markowitz ordering, chosen for line count, not merit.
+
+\begin{table}[H]
+\centering
+\begin{tabular}{lll}
+\toprule
+piece & origin & year \\
+\midrule
+modified nodal analysis & Ho, Ruehli, Brennan \cite{mna} & 1975 \\
+trapezoid with LTE timestep control & SPICE2 \cite{spice2} & 1975 \\
+\texttt{pnjlim} junction limiting & SPICE2 \cite{spice2} & 1975 \\
+source stepping & SPICE2 \cite{spice2} & 1975 \\
+default tolerances, \texttt{TRTOL} = 7 & SPICE2 \cite{spice2} & 1975 \\
+gmin stepping & SPICE3 \cite{quarles} & 1989 \\
+Ebers-Moll BJT & Ebers and Moll \cite{ebersmoll} & 1954 \\
+Shichman-Hodges MOSFET & Shichman and Hodges \cite{shichman} & 1968 \\
+netlist format & SPICE 2G6 & 1983 \\
+\bottomrule
+\end{tabular}
+\caption{Provenance of the algorithm set.}
+\label{tab:provenance}
+\end{table}
+
+Table~\ref{tab:loc} puts the budget in context, in the same metric the
+budget test uses: nonblank, noncomment lines, counted with tokei on the
+published sources.
+
+\begin{table}[H]
+\centering
+\begin{tabular}{llllr}
+\toprule
+program & year & language & scope & code lines \\
+\midrule
+SPICE 2G6 & 1983 & Fortran & \texttt{spice.f} & 14595 \\
+SPICE 3f5 & 1993 & C & \texttt{src/} & 126697 \\
+ngspice & 2026 & C & \texttt{src/} & 562128 \\
+nanospice & 2026 & Rust & \texttt{src/main.rs} & 1000 \\
+\bottomrule
+\end{tabular}
+\caption{Measured size of the SPICE line. 2G6 and 3f5 from
+Berkeley-derived source mirrors, ngspice from the current git tree,
+C and headers only.}
+\label{tab:loc}
+\end{table}
+
+The classic algorithm core is a small fraction of any production
+simulator; the bulk is device models, the user interface, and forty
+years of accumulated compatibility. At 1000 lines, what survives is
+SPICE2's core with one device model per letter. The rest of this report
+describes that core.
+
 \section{Background: modified nodal analysis}
 \locbar{theory only}{0 lines}{0}{0}
 
@@ -145,8 +257,8 @@ current $g(v_p - v_n)$, and collecting terms produces the node conductance
 matrix. The formulation breaks on ideal voltage sources: a voltage source
 has no admittance description, its current is whatever the circuit demands.
 
-Modified nodal analysis (MNA) repairs this by promoting that current to an
-unknown. The vector of unknowns becomes
+Modified nodal analysis (MNA) \cite{mna} repairs this by promoting that
+current to an unknown. The vector of unknowns becomes
 \[
 x = (v_1, \dots, v_N,\; i_1, \dots, i_B)^T,
 \]
@@ -194,7 +306,8 @@ transient, and AC analysis.
 \section{Constants and plumbing}
 \locbar{constants, error and output plumbing}{23 lines, budget 0 to 23}{0}{23}
 
-The file opens with the numerical constants, all of them SPICE2 heritage:
+The file opens with the numerical constants, all of them SPICE2 heritage
+\cite{spice2}:
 
 \begin{center}
 \small
@@ -983,7 +1096,11 @@ let scale = 0.9 / r.max(1e-8).cbrt();
 The predictor doubles as the Newton starting point, which is free and
 usually saves an iteration. Before three points of history exist, and
 after a nonconvergent step (cut by 8, the SPICE2 default), the iteration
-count controls the step instead. With \texttt{uic} the operating point is
+count controls the step instead. When the cuts drive the step below
+$h_{min}$ the run dies with \texttt{timestep too small}; SPICE2's
+wording for the same death was \texttt{TIMESTEP REDUCED TO ZILCH}, until
+a class of students demanded to know the meaning of zilch
+\cite{lifeofspice}. With \texttt{uic} the operating point is
 skipped entirely and the \texttt{ic=} values seed the reactive state,
 which is how an undriven LC tank can start oscillating at all: its
 operating point is identically zero.
@@ -1292,6 +1409,43 @@ trapezoidal integration with LTE control, breakpoints and damped restart
 steps, charge and flux based reactive state with graded junction
 capacitances, small-signal AC, eleven device letters with three source
 waveforms, four analyses, model cards, initial conditions, and output
-selection. The budget is spent exactly.
+selection. The budget is spent exactly. The algorithm set is fifty years
+old and still carries a working simulator; the budget only decides how
+much of it fits.
+
+\begin{thebibliography}{9}
+
+\bibitem{cancer} L. W. Nagel and R. A. Rohrer, Computer analysis of
+nonlinear circuits, excluding radiation (CANCER), IEEE Journal of
+Solid-State Circuits, vol. SC-6, pp. 166-182, 1971.
+
+\bibitem{spice1} L. W. Nagel and D. O. Pederson, SPICE (Simulation
+Program with Integrated Circuit Emphasis), Memorandum ERL-M382,
+University of California, Berkeley, 1973.
+
+\bibitem{spice2} L. W. Nagel, SPICE2: A computer program to simulate
+semiconductor circuits, Memorandum ERL-M520, University of California,
+Berkeley, 1975.
+
+\bibitem{mna} C.-W. Ho, A. E. Ruehli, and P. A. Brennan, The modified
+nodal approach to network analysis, IEEE Transactions on Circuits and
+Systems, vol. CAS-22, pp. 504-509, 1975.
+
+\bibitem{ebersmoll} J. J. Ebers and J. L. Moll, Large-signal behavior of
+junction transistors, Proceedings of the IRE, vol. 42, pp. 1761-1772,
+1954.
+
+\bibitem{shichman} H. Shichman and D. A. Hodges, Modeling and simulation
+of insulated-gate field-effect transistor switching circuits, IEEE
+Journal of Solid-State Circuits, vol. SC-3, pp. 285-289, 1968.
+
+\bibitem{quarles} T. L. Quarles, Analysis of performance and convergence
+issues for circuit simulation, Memorandum UCB/ERL M89/42, University of
+California, Berkeley, 1989.
+
+\bibitem{lifeofspice} L. W. Nagel, The life of SPICE, Bipolar Circuits
+and Technology Meeting, Minneapolis, 1996.
+
+\end{thebibliography}
 
 \end{document}
