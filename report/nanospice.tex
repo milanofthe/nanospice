@@ -50,7 +50,7 @@
   fonttitle=\bfseries\small, title={Field note: #1}, boxrule=0.5pt,
   left=7pt, right=7pt, top=5pt, bottom=6pt}
 
-% loc tile: code section name, label, budget range [start, end] of 999;
+% loc tile: code section name, label, budget range [start, end] in loc space;
 % hatched = lines spent before this section, solid = this section
 \newcommand{\locbar}[4]{%
 \begin{tcolorbox}[sharp corners, colback=white, colframe=black,
@@ -296,7 +296,7 @@ requested analyses, plus the branch count. Devices are one enum:
 \begin{rust}
 enum Dev {
     R { p: usize, n: usize, v: f64 },
-    C { p: usize, n: usize, v: f64, ic: f64 },
+    C { p: usize, n: usize, v: f64, ic: f64, m: f64 },
     L { p: usize, n: usize, v: f64, br: usize, ic: f64 },
     V { p: usize, n: usize, dc: f64, ac: f64, wave: Option<Wave>, br: usize },
     I { p: usize, n: usize, dc: f64, ac: f64, wave: Option<Wave> },
@@ -391,8 +391,8 @@ and JFET) are capacitances across a node pair, which is exactly the
 with capacitance parameters pushes internal \texttt{Dev::C} instances
 alongside the device (with the junction orientation flipped for the pnp).
 No assembly, state, timestep, or AC code knows they exist; transient
-integration, LTE control, and the $j\omega C$ stamps come along for
-free. Junctions carry the grading exponent \texttt{mj} (default 0.5),
+integration, LTE control, and the $j\omega C$ stamps apply to them
+unchanged. Junctions carry the grading exponent \texttt{mj} (default 0.5),
 gate oxide capacitances are linear, and the \texttt{m=} parameter is
 available on the user-level \texttt{C} card as well. With the
 capacitances present, transistors switch in finite time and a three-stage
@@ -924,7 +924,7 @@ trapezoidal rule.
 \begin{derivation}{the Milne estimate and the cube-root rule}
 The trapezoidal rule commits the local error
 $\varepsilon_{tr} = -\tfrac{h^3}{12}\, \dddot{x}(\xi)$ per step. The
-third derivative is estimated for free with a predictor: a quadratic
+third derivative is estimated without extra solves by a predictor: a quadratic
 polynomial through the last three accepted points, extrapolated to the
 new time. With step history $d_1, d_2$ and new step $h$, Lagrange
 extrapolation gives
@@ -1112,7 +1112,7 @@ roughly halve the line count at a different performance class.
 
 \section{Closing}
 
-The final count is 977 of 1000 lines, with the classic algorithm set
+The final count is 992 of 1000 lines, with the classic algorithm set
 complete: MNA, sparse LU with partial pivoting, two Verilog-A style
 contribution primitives carrying all device stamps, Newton with pnjlim
 and both continuation fallbacks as data-driven homotopy paths,
