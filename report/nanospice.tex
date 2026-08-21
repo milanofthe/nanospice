@@ -141,7 +141,41 @@ section~\ref{sec:cuts}.
 Nothing in this simulator is algorithmically original. The algorithm set
 is the Berkeley canon, and the budget question the repository asks is
 how much of that canon fits in 1000 lines. This section records where
-the canon comes from.
+the canon comes from: who added which method, and when.
+
+\begin{center}
+\begin{tikzpicture}[evt/.style={align=center, font=\footnotesize}]
+\pgfmathsetlengthmacro{\dx}{(\linewidth-12mm)/8}
+\draw[line width=0.6pt, ->] (-3mm,0) -- ({7*\dx+9mm},0);
+\foreach \i in {0,...,7} \fill (\i*\dx,0) circle (1.5pt);
+\foreach \i/\yr in {0/1954, 2/1969, 4/1975, 5/1983, 7/2026} {
+  \draw[line width=0.3pt] (\i*\dx,0) -- (\i*\dx,2mm);
+  \node[evt, above] at (\i*\dx,2mm) {\textbf{\yr}};
+}
+\foreach \i/\yr in {1/1968, 3/1972, 4/1975, 6/1989} {
+  \draw[line width=0.3pt] (\i*\dx,0) -- (\i*\dx,-2mm);
+  \node[evt, below] at (\i*\dx,-2mm) {\textbf{\yr}};
+}
+\node[evt, above, text width=\dx] at (0,7mm)
+  {Ebers, Moll\\ BJT model};
+\node[evt, below, text width=\dx] at (\dx,-7mm)
+  {Shichman, Hodges\\ MOSFET model};
+\node[evt, above, text width=\dx] at (2*\dx,7mm)
+  {CANCER, Rohrer's class\\ sparse LU, implicit integration};
+\node[evt, below, text width=\dx] at (3*\dx,-7mm)
+  {SPICE1, Nagel\\ public domain};
+\node[evt, above, text width=\dx] at (4*\dx,7mm)
+  {SPICE2, Nagel\\ trapezoid with LTE, pnjlim, source stepping};
+\node[evt, below, text width=\dx] at (4*\dx,-7mm)
+  {Ho, Ruehli, Brennan\\ MNA};
+\node[evt, above, text width=\dx] at (5*\dx,7mm)
+  {SPICE 2G6\\ Cohen\\ netlist format freezes};
+\node[evt, below, text width=\dx] at (6*\dx,-7mm)
+  {SPICE3, Quarles\\ C rewrite, gmin stepping};
+\node[evt, above, text width=\dx] at (7*\dx,7mm)
+  {nanospice\\ the core in 1000 lines};
+\end{tikzpicture}
+\end{center}
 
 The motivation is the integrated circuit itself. An IC cannot be
 breadboarded, an internal node cannot be probed, and a design error after
