@@ -587,15 +587,15 @@ midband $g_m R_C \approx 240$, exactly $47.6$\,dB in the flat region
 
 \begin{frame}{The cut list}
 \begin{center}
-\begin{tabular}{llr}
+\begin{tabular}{ll}
 \toprule
-feature & why it lost & est. lines \\
+feature & why it lost \\
 \midrule
-\texttt{.subckt} hierarchy & lost to the transistor models & $\sim$100 \\
-Markowitz ordering & netlist order suffices & $\sim$80 \\
-Gummel-Poon BJT & Ebers-Moll covers the core & $\sim$80 \\
-noise analysis & needs the adjoint system & $\sim$80 \\
-\texttt{.param} expressions & a calculator is its own project & $\sim$60 \\
+\texttt{.subckt} hierarchy & lost to the transistor models \\
+Markowitz ordering & netlist order suffices \\
+Gummel-Poon BJT & Ebers-Moll covers the core \\
+noise analysis & needs the adjoint system \\
+\texttt{.param} expressions & a calculator is its own project \\
 \bottomrule
 \end{tabular}
 \end{center}

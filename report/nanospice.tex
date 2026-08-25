@@ -1404,20 +1404,21 @@ fails this test by design.
 
 \begin{table}[h]
 \centering
-\begin{tabular}{llr}
+\begin{tabular}{ll}
 \toprule
-feature & why it lost & est. lines \\
+feature & why it lost \\
 \midrule
-\texttt{.subckt} hierarchy & lost to the transistor models & $\sim$100 \\
-Markowitz ordering & netlist order suffices at this scale & $\sim$80 \\
-Gummel-Poon BJT & Ebers-Moll covers the teaching core & $\sim$80 \\
-noise analysis & needs the adjoint system & $\sim$80 \\
-\texttt{.param} expressions & a calculator is its own project & $\sim$60 \\
-temperature sweeps & $V_T$ is a constant, by choice & $\sim$25 \\
-current-based convergence check & limiting denial covers the failure mode & $\sim$15 \\
+\texttt{.subckt} hierarchy & lost to the transistor models \\
+Markowitz ordering & netlist order suffices at this scale \\
+Gummel-Poon BJT & Ebers-Moll covers the teaching core \\
+noise analysis & needs the adjoint system \\
+\texttt{.param} expressions & a calculator is its own project \\
+temperature sweeps & $V_T$ is a constant, by choice \\
+current-based convergence check & limiting denial covers the failure mode \\
 \bottomrule
 \end{tabular}
-\caption{Features that did not fit, with the reason and the estimated cost.}
+\caption{Features that did not fit, with the reason. None of them were written,
+so what they would have cost is not known.}
 \end{table}
 
 The most consequential remaining cut is \texttt{.subckt}: real decks are
@@ -1426,9 +1427,9 @@ practice. It would be the first addition if the budget grew.
 
 On language: the device enum with exhaustive matching carries the parser,
 the assembly, and the output selection, and is the main reason the budget
-holds. C++ would trade the roughly 60 lines the \texttt{Num} trait and
-complex type cost against visitor or inheritance boilerplate around
-\texttt{std::variant}, roughly a wash with fewer static guarantees.
+holds. C++ would trade the \texttt{Num} trait and the complex type against visitor or
+inheritance boilerplate around \texttt{std::variant}, roughly a wash with fewer
+static guarantees.
 Fortran is strong on dense arrays, which this simulator does not use,
 and weak on the parser and the sparse row structure. Python would
 roughly halve the line count at a different performance class.
