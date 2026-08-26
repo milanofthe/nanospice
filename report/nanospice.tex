@@ -75,6 +75,40 @@
 \end{tikzpicture}%
 \end{tcolorbox}\medskip}
 
+% Budget bar: the whole file as one divided bar, segments in file order with
+% the section names on alternating sides. Same geometry as the per section
+% bars above, so this one reads as their legend.
+% #1 total lines, #2 a list of  start/end/labelpos/level/{text}
+% level is 1 or 2 above the bar, -1 or -2 below it.
+\newcommand{\budgetbar}[2]{%
+\begin{center}
+\begin{tikzpicture}[bl/.style={align=center, font=\scriptsize, inner sep=1pt}]
+\pgfmathsetlengthmacro{\bw}{\linewidth-4pt}
+\def\bh{5mm}
+\foreach \s/\e/\a/\lv/\t [count=\i] in {#2} {
+  \pgfmathsetlengthmacro{\xa}{(\s/#1)*\bw}
+  \pgfmathsetlengthmacro{\xb}{(\e/#1)*\bw}
+  \pgfmathsetlengthmacro{\xm}{(0.5*(\s+\e)/#1)*\bw}
+  \pgfmathsetlengthmacro{\xl}{(\a/#1)*\bw}
+  \pgfmathsetlengthmacro{\yl}{abs(\lv)*6.5mm}
+  \ifodd\i\relax\fill[black!12] (\xa,0) rectangle (\xb,\bh);\fi
+  \draw[line width=0.4pt] (\xa,0) -- (\xa,\bh);
+  \ifnum\lv>0\relax
+    \pgfmathsetlengthmacro{\yk}{\bh+0.35*\yl}
+    \pgfmathsetlengthmacro{\yt}{\bh+\yl}
+    \draw[line width=0.3pt] (\xm,\bh) -- (\xm,\yk) -- (\xl,\yt);
+    \node[bl, above] at (\xl,\yt) {\t};
+  \else
+    \pgfmathsetlengthmacro{\yk}{-0.35*\yl}
+    \pgfmathsetlengthmacro{\yt}{-\yl}
+    \draw[line width=0.3pt] (\xm,0) -- (\xm,\yk) -- (\xl,\yt);
+    \node[bl, below] at (\xl,\yt) {\t};
+  \fi
+}
+\draw[line width=0.5pt] (0,0) rectangle (\bw,\bh);
+\end{tikzpicture}
+\end{center}}
+
 \title{\textbf{nanospice}\\[4pt]\large A SPICE circuit simulator in 1000 lines of Rust}
 \author{Milan Rother}
 \date{2026}
@@ -130,6 +164,22 @@ analyses and main & 210 & 1000 \\
 \caption{Line budget by code section, in file order.}
 \label{tab:budget}
 \end{table}
+
+\begin{figure}[h]
+\budgetbar{1000}{
+  0/23/85/2/{plumbing\\\textbf{23}},
+  23/101/70/-1/{numbers\\\textbf{78}},
+  101/162/180/1/{circuit data\\model \textbf{61}},
+  162/437/300/-1/{parser\\\textbf{275}},
+  437/558/480/1/{sparse LU\\\textbf{121}},
+  558/622/600/-1/{device models\\\textbf{64}},
+  622/764/700/1/{solver\\\textbf{142}},
+  764/790/810/-2/{output\\\textbf{26}},
+  790/1000/900/1/{analyses\\and main \textbf{210}}}
+\caption{The same budget as one bar. Each section bar in the rest of the
+report is a slice of this one.}
+\label{fig:budget}
+\end{figure}
 
 The parser is the largest section: the numerics of a circuit simulator
 are compact, the input format is not. Everything the budget excluded is listed with reasons in
